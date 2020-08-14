@@ -1,0 +1,165 @@
+#include <unistd.h>
+#include <iostream>
+#include <stdio.h>
+#include <sys/socket.h>
+#include <stdlib.h>
+#include <netinet/in.h>
+#include <string.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/rand.h>
+#define PORT 8080
+
+using namespace std;
+
+int main(int argc, char const *argv[])
+{
+    int ret; // used for return values
+    unsigned char *key = (unsigned char *)"0123456789012345";
+
+    int server_fd, new_socket, valread;
+    struct sockaddr_in address;
+    int opt = 1;
+    int addrlen = sizeof(address);
+    char buffer[1024] = {0};
+    const char* hello = "Hello from server";
+
+    // Creating socket file descriptor
+    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0)
+    {
+        perror("socket failed");
+        exit(EXIT_FAILURE);
+    }
+
+    // Forcefully attaching socket to the port 8080
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT,
+                   &opt, sizeof(opt)))
+    {
+        perror("setsockopt");
+        exit(EXIT_FAILURE);
+    }
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons( PORT );
+
+    // Forcefully attaching socket to the port 8080
+    if (bind(server_fd, (struct sockaddr *)&address,
+             sizeof(address))<0)
+    {
+        perror("bind failed");
+        exit(EXIT_FAILURE);
+    }
+    if (listen(server_fd, 3) < 0)
+    {
+        perror("listen");
+        exit(EXIT_FAILURE);
+    }
+    if ((new_socket = accept(server_fd, (struct sockaddr *)&address,
+                             (socklen_t*)&addrlen))<0)
+    {
+        perror("accept");
+        exit(EXIT_FAILURE);
+    }
+
+    valread = read( new_socket , buffer, 1024);
+    cout<<"received crypted message: "<<buffer<<endl;
+    cout<<"size: "<<valread<<endl;
+
+
+
+    // declare some useful variables:
+   const EVP_CIPHER* cipher = EVP_aes_128_cbc();
+   int iv_len = EVP_CIPHER_iv_length(cipher);
+
+    // Allocate buffer for IV, ciphertext, plaintext
+    unsigned char* iv = (unsigned char*)malloc(iv_len);
+    int cphr_size = valread;
+    char* cphr_buf = (char*)malloc(cphr_size);
+    memcpy(cphr_buf, buffer, cphr_size);
+
+    char* clear_buf = (char*)malloc(cphr_size);
+    if(!iv || !cphr_buf || !clear_buf) { cerr << "Error: malloc returned NULL (file too big?)\n"; exit(1); }
+
+
+    // open the file to decrypt:
+   FILE* cphr_file = fopen("iv.enc", "rb");
+   if(!cphr_file) { cerr << "Error: cannot open file '" ; exit(1); }
+
+   // read the IV and the ciphertext from file:
+   ret = fread(iv, 1, iv_len, cphr_file);
+   if(ret < iv_len) { cerr << "Error while reading file '"; exit(1); }
+
+   fclose(cphr_file);
+
+   //Create and initialise the context
+   EVP_CIPHER_CTX *ctx;
+   ctx = EVP_CIPHER_CTX_new();
+   if(!ctx){ cerr << "Error: EVP_CIPHER_CTX_new returned NULL\n"; exit(1); }
+   ret = EVP_DecryptInit(ctx, cipher, key, iv);
+   if(ret != 1){
+      cerr <<"Error: DecryptInit Failed\n";
+      exit(1);
+   }
+
+   int update_len = 0; // bytes decrypted at each chunk
+   int total_len = 0; // total decrypted bytes
+
+   // Decrypt Update: one call is enough because our ciphertext is small.
+   ret = EVP_DecryptUpdate(ctx, (unsigned char*)clear_buf, &update_len, (unsigned char*)cphr_buf, cphr_size);
+   if(ret != 1){
+      cerr <<"Error: DecryptUpdate Failed\n";
+      exit(1);
+   }
+   total_len += update_len;
+   cout<<"total_len: "<<total_len<<endl;
+
+   //Decrypt Final. Finalize the Decryption and adds the padding
+   ret = EVP_DecryptFinal(ctx, (unsigned char*)clear_buf + total_len, &update_len);
+   if(ret != 1){
+      cerr <<"Error: DecryptFinal Failed\n";
+      cout<<"iv: "<<iv<<endl;
+      cout<<"clear: " << (unsigned char*)clear_buf<<endl;
+      cout<<"tutto: "<< clear_buf + total_len;
+      cin.get();
+      exit(1);
+   }
+   total_len += update_len;
+   int clear_size = total_len;
+
+   // delete the context from memory:
+   EVP_CIPHER_CTX_free(ctx);
+
+   /*
+   // write the plaintext into a '.dec' file:
+   string clear_file_name = cphr_file_name + ".dec";
+   FILE* clear_file = fopen(clear_file_name.c_str(), "wb");
+   if(!clear_file) { cerr << "Error: cannot open file '" << clear_file_name << "' (no permissions?)\n"; exit(1); }
+   ret = fwrite(clear_buf, 1, clear_size, clear_file);
+   if(ret < clear_size) { cerr << "Error while writing the file '" << clear_file_name << "'\n"; exit(1); }
+   fclose(clear_file);*/
+
+   // Just out of curiosity, print on stdout the used IV retrieved from file.
+   cout<<"Used IV:"<<endl;
+   BIO_dump_fp (stdout, (const char *)iv, iv_len);
+
+   cout<<clear_buf<<endl;
+
+   // delete the plaintext from memory:
+   // Telling the compiler it MUST NOT optimize the following instruction.
+   // With optimization the memset would be skipped, because of the next free instruction.
+#pragma optimize("", off)
+   memset(clear_buf, 0, clear_size);
+#pragma optimize("", on)
+   free(clear_buf);
+
+   //cout << "File '"<< cphr_file_name << "' decrypted into file '" << clear_file_name << "', clear size is " << clear_size << " bytes\n";
+
+   // deallocate buffers:
+   free(iv);
+   free(cphr_buf);
+
+    cin.get();
+    cin.get();
+
+    return 0;
+}
