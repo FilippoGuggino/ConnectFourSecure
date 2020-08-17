@@ -57,7 +57,10 @@ void Grid::clear(){
 }
 
 bool Grid::setCell(int row, int col, cell color){
+  //check for out of bound input
   if((row < 0 || row > 5) && (col < 0 || col > 6)) return false;
+  //if the cell is already occupied
+  if(grid[row][col] != empty) return false;
 
   //TODO controls
 
