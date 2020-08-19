@@ -7,6 +7,9 @@ TERMINAL=konsole #change to your terminal
 
 #targets .
 all: Client/main.cpp Server/main.cpp
+	#Optional parameter:
+	#	num_cl=<number of client to open>
+
 	kill -9 $$(ps u | grep "[s]erver" | tr -s ' ' | cut -d ' ' -f2) || true
 	kill -9 $$(ps u | grep "[c]lient" | tr -s ' ' | cut -d ' ' -f2) || true
 
