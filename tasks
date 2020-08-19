@@ -1,0 +1,15 @@
+Guggio:
+  -interfaccia menu
+  -protocollo menu
+  -multi threading for server
+  -interrupt driven socket connection
+
+Zacca:
+  -autenticazione con server (attraverso public key, guardare slide ssl)
+  -connessione con avversario
+  -protocollo partita
+
+Cecche:
+  -generazione chiave di sessione
+  -generazione chiave di sessione con avversario
+  -meccanismo di log-off (partita e generale)

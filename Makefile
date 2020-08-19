@@ -21,7 +21,10 @@ all: Client/main.cpp Server/main.cpp
 
 #another target for client
 client_target:
-	$(TERMINAL) -e "./client" &
+	@for n in $$(seq 1 $(num_cl)) ; do \
+		$(TERMINAL) -e "./client" & \
+	done
+
 
 
 clean: server client

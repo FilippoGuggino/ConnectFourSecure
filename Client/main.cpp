@@ -9,19 +9,107 @@
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <openssl/rand.h>
+#include <vector>
 #include "interface.h"
 #define PORT 8080
 #define BUFFER_SIZE 1024
 
 using namespace std;
 
+int connect(int &sock){
+     int ret = 0;
+
+   	sock = 0;
+     int valread = 0;
+   	struct sockaddr_in serv_addr;
+
+
+   	if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0)
+   	{
+   		printf("\n Socket creation error \n");
+   		return -1;
+   	}
+
+   	serv_addr.sin_family = AF_INET;
+   	serv_addr.sin_port = htons(PORT);
+
+   	// Convert IPv4 and IPv6 addresses from text to binary form
+   	if(inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr)<=0)
+   	{
+   		printf("\nInvalid address/ Address not supported \n");
+   		return -1;
+   	}
+
+   	if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
+   	{
+   		printf("\nConnection Failed \n");
+   		return -1;
+   	}
+
+     /*struct sockaddr_in my_addr;
+     unsigned int len = sizeof(struct sockaddr_in);
+     getsockname(sock, (struct sockaddr *) &my_addr, &len);
+     cout<<"my port is: "<<ntohs(my_addr.sin_port)<<endl;*/
+
+     return sock;
+}
+
 int main(int argc, char const *argv[])
 {
-  Grid g;
+     int sock;
+     connect(sock);
+     /*vector<string> prova;
+     prova.push_back("giovanni");
+     prova.push_back("francesco");
+     prova.push_back("emilia");
+
+     BaseInterface* aCurrentMenu = new FirstMenu(prova); // We have a pointer to our menu. We're using a pointer so we can change the menu seamlessly.
+     bool isQuitOptionSelected = false;
+     while (!isQuitOptionSelected) // We're saying that, as long as the quit option wasn't selected, we keep running
+     {
+          aCurrentMenu->printText(); // This will call the method of whichever MenuObject we're using, and print the text we want to display
+
+          int choice = 0; // Always initialise variables, unless you're 100% sure you don't want to.
+          cin >> choice;
+
+          BaseInterface* aNewMenuPointer = aCurrentMenu->getNextMenu(choice, isQuitOptionSelected); // This will return a new object, of the type of the new menu we want. Also checks if quit was selected
+
+          if (aNewMenuPointer && aNewMenuPointer != aCurrentMenu) // This is why we set the pointer to 0 when we were creating the new menu - if it's 0, we didn't create a new menu, so we will stick with the old one
+          {
+               delete aCurrentMenu; // We're doing this to clean up the old menu, and not leak memory.
+               aCurrentMenu = aNewMenuPointer; // We're updating the 'current menu' with the new menu we just created
+          }
+     }*/
+
+
+     /*INTERRUPT DRIVEN CONNECTION
+     int io_handler(), on;
+     pid_t pgrp;
+
+     on=1;
+     signal(SIGIO, io_handler);
+
+     // Set the process receiving SIGIO/SIGURG signals to us
+
+     pgrp=getpid();
+     if (ioctl(s, SIOCSPGRP, &pgrp) < 0) {
+              perror("ioctl F_SETOWN");
+              exit(1);
+     }
+
+     // Allow receipt of asynchronous I/O signals
+
+     if (ioctl(s, FIOASYNC, &on) < 0) {
+              perror("ioctl F_SETFL, FASYNC");
+              exit(1);
+     }*/
+
+
+  /*Grid g;
   g.printGrid();
   cin.get();
   g.setCell(1,2, blue);
-  g.printGrid();
+  g.printGrid();*/
   /*
   int ret = 0;
 
@@ -59,6 +147,12 @@ int main(int argc, char const *argv[])
 
 
   // declare some useful variables:
+  char buffer[BUFFER_SIZE] = {0};
+  cin>>buffer;
+  int clear_size = strlen(buffer);
+  unsigned char* clear_buf = (unsigned char*)malloc(clear_size);
+  memcpy(clear_buf, buffer, clear_size);
+
   const EVP_CIPHER* cipher = EVP_aes_128_cbc();
   int iv_len = EVP_CIPHER_iv_length(cipher);
   int block_size = EVP_CIPHER_block_size(cipher);
@@ -143,5 +237,7 @@ int main(int argc, char const *argv[])
 
   cin.get();*/
   cin.get();
+  close(sock);
+
 	return 0;
 }
