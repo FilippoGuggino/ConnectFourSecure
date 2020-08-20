@@ -1,7 +1,7 @@
 cc=g++
 MAKE=make
 RM=rm
-INTERFACE=-I Interface/inc -L Interface/lib -static
+INTERFACE=-I Interface/inc -L Interface/lib
 SERVER=ps u | grep "[s]erver" | tr -s ' ' | cut -d ' ' -f2
 TERMINAL=konsole #change to your terminal
 
