@@ -3,7 +3,7 @@ MAKE=make
 RM=rm
 INTERFACE=-I Interface/inc -L Interface/lib
 SERVER=ps u | grep "[s]erver" | tr -s ' ' | cut -d ' ' -f2
-TERMINAL=konsole #change to your terminal
+TERMINAL=gnome-terminal #change to your terminal
 
 #targets .
 all: Client/main.cpp Server/main.cpp
@@ -17,7 +17,7 @@ all: Client/main.cpp Server/main.cpp
 	ar rcs Interface/lib/libinterface.a Interface/obj/interface.o
 
 	$(cc) $(INTERFACE) Client/main.cpp -linterface -o client -lssl -lcrypto
-	$(cc) Server/main.cpp -o server -lssl -lcrypto
+	$(cc) Server/main.cpp -o server -lssl -lcrypto -pthread
 	$(TERMINAL) -e "./server" &
 	sleep 1
 	$(MAKE) client_target
