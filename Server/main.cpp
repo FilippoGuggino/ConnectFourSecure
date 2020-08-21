@@ -18,7 +18,7 @@
 #define PORT 8080
 
 using namespace std;
-/*
+
 // SERVER SESSION KEY GENERATION
 
 static DH *get_dh2048_auto(void)
@@ -73,57 +73,78 @@ static DH *get_dh2048_auto(void)
 
 int handleErrorsDH(){
 	printf("An error has occured during DH processing \n");
-	exit(1);
+	//exit(1);
 }
 
 
-void serverSessionKeyGeneration(){
+void serverSessionKeyGeneration(int &socket){
 
+
+  printf("DH: param phase \n"); //debug
  //DH
+
   EVP_PKEY* dhparams;
   if(NULL == (dhparams = EVP_PKEY_new())) handleErrorsDH();
   DH* temp = get_dh2048_auto();
   if(1 != EVP_PKEY_set1_DH(dhparams,temp)) handleErrorsDH();
   DH_free(temp);
 
+  printf("DH: param 2 phase \n"); //debug
 
-  EVP_PKEY_CTX* DHctx = EVP_PKEY_CTX_new(dhparams,NULL) handleErrorsDH();
+  EVP_PKEY_CTX* DHctx = EVP_PKEY_CTX_new(dhparams,NULL); //handle errors
   EVP_PKEY* dh_prv_key = NULL;
-  EVP_PKEY_keygen_init(DHctx) handleErrorsDH();
-  EVP_PKEY_keygen(DHctx,&dh_prv_key) handleErrorsDH();
+  EVP_PKEY_keygen_init(DHctx);
+  EVP_PKEY_keygen(DHctx,&dh_prv_key);
 
-  string my_pubkey_file_name;
+  int dh_prv_key_size =  EVP_PKEY_size(dh_prv_key);
+  cout<<dh_prv_key_size<<"<>"<<dh_prv_key<<"\n";
 
-  //TODO sostituire con recupero automatico della chiave
-  cout << "Please, type the PEM file that will contain your DH public key: ";
-  getline(cin, my_pubkey_file_name);
-  if(!cin) { cerr << "Error during input\n"; exit(1); }
+  cout << "Sending DH public key to client \n";
 
-  FILE* p1w = fopen(my_pubkey_file_name.c_str(), "w");
-  if(!p1w){ cerr << "Error: cannot open file '"<< my_pubkey_file_name << "' (missing?)\n"; exit(1); }
-  PEM_write_PUBKEY(p1w, dh_prv_key);
-  fclose(p1w);
+  BIO* mbio=BIO_new(BIO_s_mem());
+  PEM_write_bio_PUBKEY(mbio,dh_prv_key);
+  char* pubkey_buf = NULL;
+  long pubkey_size = BIO_get_mem_data(mbio,&pubkey_buf);
+  send(socket, &pubkey_size, sizeof(long) , 0 ); //dimensione messaggio
+  send(socket, pubkey_buf,pubkey_size,0);
+  BIO_free(mbio);
 
-  string peer_pubkey_file_name;
+  long peer_pubkey_size;
 
-  //TODO sostituire con recupero automatico del file
-  cout << "Please, type the PEM file that contains the peer's DH public key: ";
-  getline(cin, peer_pubkey_file_name);
-  if(!cin) { cerr << "Error during input\n"; exit(1); }
+  //size of  message is received
+  int valread;
+  if ((valread = recv( socket , &peer_pubkey_size, sizeof(long),0)) == 0)
+  {
+    exit(1);
+  }
 
-  FILE* peer_file = fopen(peer_pubkey_file_name.c_str(), "r");
-  if(!peer_file){ cerr << "Error: cannot open file '"<< peer_pubkey_file_name <<"' (missing?)\n"; exit(1); }
-  EVP_PKEY* peer_pubkey = PEM_read_PUBKEY(p2r, NULL, NULL, NULL);
-  fclose(peer_file);
-  if(!peer_pubkey){ cerr << "Error: PEM_read_PUBKEY returned NULL\n"; exit(1); }
+  unsigned char* peer_pubkey_buf =(unsigned char*)malloc(peer_pubkey_size);
 
-  printf("Starting DH process\n"); //debug
+  cout<<peer_pubkey_size<<"\n";
+
+  //message received
+  if (valread = recv( socket , peer_pubkey_buf, peer_pubkey_size,MSG_WAITALL) == 0)
+  {
+    exit(1);
+  }
+
+  BIO* peer_mbio = BIO_new(BIO_s_mem());
+  BIO_write(peer_mbio, peer_pubkey_buf, peer_pubkey_size);
+  EVP_PKEY* peer_pubkey=PEM_read_bio_PUBKEY(peer_mbio,NULL,NULL,NULL);
+  BIO_free(peer_mbio);
+
+
+
+
+  cout<<peer_pubkey_size<<"<>"<<peer_pubkey<<"\n";
+
+  printf("Starting DH process inside the server \n"); //debug
 
 
   EVP_PKEY_CTX *der_ctx;
   unsigned char *skey;
   size_t skeylen;
-  derive_ctx = EVP_PKEY_CTX_new(dh_prv_key,NULL);
+  der_ctx = EVP_PKEY_CTX_new(dh_prv_key,NULL);
   if (!der_ctx) handleErrorsDH();
   if (EVP_PKEY_derive_init(der_ctx) <= 0) handleErrorsDH();
   //Setting the peer with its pubkey
@@ -140,35 +161,28 @@ void serverSessionKeyGeneration(){
   printf("Here it is the shared secret: \n");
   BIO_dump_fp (stdout, (const char *)skey, skeylen);
 
-  //ATTENZIONEEEEEEEEEEEEEEEEEEEEEEEE
-  /*WARNING! YOU SHOULD NOT USE THE DERIVED SECRET AS A SESSION KEY!
-   * IS COMMON PRACTICE TO HASH THE DERIVED SHARED SECRET TO OBTAIN A SESSION KEY.
-   * IN NEXT LABORATORY LESSON WE ADDRESS HASHING!
-
-  //FREE EVERYTHING INVOLVED WITH THE EXCHANGE (not the shared secret tho)
-
-  unsigned char* digest;
-  unsigned int digestlen;
+  unsigned char* hashed_secret;
+  unsigned int hashed_secret_len;
   EVP_MD_CTX *Hctx;
   Hctx = EVP_MD_CTX_new();
-  //allocate memory for digest
-  digest = (unsigned char*) malloc(EVP_MD_size(EVP_sha256()));
+  //allocate memory
+  hashed_secret = (unsigned char*) malloc(EVP_MD_size(EVP_sha256()));
   //init, Update (only once) and finalize digest
   EVP_DigestInit(Hctx, EVP_sha256());
   EVP_DigestUpdate(Hctx, (unsigned char*)skey, skeylen);
-  EVP_DigestFinal(Hctx, digest, &digestlen);
+  EVP_DigestFinal(Hctx, hashed_secret, &hashed_secret_len);
 
 
   //REMEMBER TO FREE CONTEXT!!!!!!
   EVP_MD_CTX_free(Hctx);
-  EVP_PKEY_CTX_free(derive_ctx);
+  EVP_PKEY_CTX_free(der_ctx);
   EVP_PKEY_free(peer_pubkey);
   EVP_PKEY_free(dh_prv_key);
   EVP_PKEY_CTX_free(DHctx);
-  EVP_PKEY_free(params);
+  EVP_PKEY_free(dhparams);
 
 }
-*/
+
 
 
 void checkCertificate(){
@@ -399,6 +413,8 @@ int main(int argc, char const *argv[])
                     inet_ntoa(address.sin_addr) ,
                     ntohs(address.sin_port));
 
+                    serverSessionKeyGeneration(new_socket);
+
                     //send new connection greeting message
                     /*if( send(new_socket, message, strlen(message), 0) != strlen(message) )
                     {
@@ -467,6 +483,7 @@ int main(int argc, char const *argv[])
 
      cin.get();
      cin.get();
+
 
      return 0;
 }
