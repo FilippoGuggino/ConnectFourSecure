@@ -22,9 +22,6 @@
 
 using namespace std;
 
-<<<<<<< HEAD
-// SERVER SESSION KEY GENERATION
-=======
 //utility function that allows to get a fix-sized string from nonce
 string toString(string s){
 
@@ -89,7 +86,6 @@ void send_digital_signature(int sock,unsigned char* clear_buf,unsigned int clear
   // free(clear_buf);  --> not necessary since it hasn't been allocated in heap
   free(sgnt_buf);
 }
->>>>>>> d4faca39e84c72b4614b981e130d92cf2c48733d
 
 bool verify_client_signature(string username,unsigned char* sgnt_buf,unsigned int sgnt_size,string client_nonce){
 
@@ -135,11 +131,11 @@ bool verify_client_signature(string username,unsigned char* sgnt_buf,unsigned in
   return true;
 }
 
-<<<<<<< HEAD
 int handleErrorsDH(){
 	printf("An error has occured during DH processing \n");
-	//exit(1);
-=======
+	exit(1);
+}
+
 void sendCertificate(int sock){
   int ret;
   // open the certificate file:
@@ -162,7 +158,6 @@ void sendCertificate(int sock){
 
   send(sock , (const char*)&cert_size , sizeof(uint32_t) , 0 );  //certificate size
   send(sock , cert_buf , cert_size , 0 );
->>>>>>> d4faca39e84c72b4614b981e130d92cf2c48733d
 }
 
 bool handleAuthentication(int sd){
@@ -248,7 +243,6 @@ bool handleAuthentication(int sd){
   return true;
 }
 
-<<<<<<< HEAD
 void serverSessionKeyGeneration(int &socket){
 
 
@@ -355,13 +349,12 @@ void serverSessionKeyGeneration(int &socket){
 
 }
 
-=======
+
 void handleClient(int sd){
   if(handleAuthentication(sd) == false)
     cout<<"Authentication Error, abort connection"<<endl;
 
 }
->>>>>>> d4faca39e84c72b4614b981e130d92cf2c48733d
 
 int main(int argc, char const *argv[])
 {
@@ -460,7 +453,6 @@ client_socket[i] = 0;
 //Echo back the message that came in
 else
 {
-<<<<<<< HEAD
      int opt = 1;
      int master_socket , addrlen , new_socket , client_socket[30] ,
      max_clients = 30 , activity, i , valread , sd;
@@ -641,22 +633,6 @@ else
 
 
      return 0;
-=======
-//set the string terminating NULL byte on the end
-//of the data read
-buffer[valread] = '\0';
-send(sd , buffer , strlen(buffer) , 0 );
-}
-}
-}*/
-
-
-
-cin.get();
-cin.get();
-
-return 0;
->>>>>>> d4faca39e84c72b4614b981e130d92cf2c48733d
 }
 
 /**
