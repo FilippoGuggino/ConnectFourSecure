@@ -2,6 +2,7 @@ Guggio:
   -interfaccia menu
   -protocollo menu
   -multi threading for server
+  -store publickey of clients
   -interrupt driven socket connection
 
 Zacca:
@@ -13,3 +14,24 @@ Cecche:
   -generazione chiave di sessione
   -generazione chiave di sessione con avversario
   -meccanismo di log-off (partita e generale)
+
+struct ChallengeRequest{
+     unint8_t type;
+     unsigned char username[20];
+     uint32_t nonce;
+     unint8_t response; (optional)
+};
+
+Type
+1 = autenticazione
+2 = voglio sfidare <tizio>
+3 = <tizio> ti vuole sfidare
+
+Esempio Filippo manda richiesta di sfida a Zaccaria
+-Filippo crea nonce e lo invia al server
+-Filippo invia <2, Zaccaria, nonce> al server
+-Server invia il nonce (scelto da Filippo) a Zaccaria
+-Server invia <3, Filippo, nonce> a Zaccaria
+-Zaccaria sceglie se accettare(1) o rifiutare(0)
+-Zaccaria invia <3, Filippo, nonce, 1/0> al server
+-Server invia <2, Zaccaria, nonce, 1/0> a Filippo

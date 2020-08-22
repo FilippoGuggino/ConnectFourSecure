@@ -15,6 +15,7 @@
 #include <vector>
 #include <sys/ioctl.h>
 
+#define MAX_CLIENTS 30
 #define PORT 8080
 
 using namespace std;
@@ -290,14 +291,16 @@ void checkCertificate(){
      X509_STORE_CTX_free(certvfy_ctx);
 }
 
+int indexOf(struct sockaddr_in connected_users[], struct sockaddr_in addr){
+     for(int i = 0; i < MAX_CLIENTS; i++);
+}
+
 int main(int argc, char const *argv[])
 {
      int opt = 1;
-     int master_socket , addrlen , new_socket , client_socket[30] ,
-     max_clients = 30 , activity, i , valread , sd;
+     int master_socket , addrlen , new_socket , client_socket[MAX_CLIENTS] , activity, i , valread , sd;
      int max_sd;
      struct sockaddr_in address;
-     struct sockaddr_in connected_users[30] = {NULL};
 
      char buffer[1024] = {0};  //data buffer of 1K
 
@@ -305,7 +308,7 @@ int main(int argc, char const *argv[])
      fd_set readfds;
 
      //initialise all client_socket[] to 0 so not checked
-     for (i = 0; i < max_clients; i++)
+     for (i = 0; i < MAX_CLIENTS; i++)
      {
           client_socket[i] = 0;
      }
@@ -359,7 +362,7 @@ int main(int argc, char const *argv[])
           max_sd = master_socket;
 
           //add child sockets to set
-          for ( i = 0 ; i < max_clients ; i++)
+          for ( i = 0 ; i < MAX_CLIENTS ; i++)
           {
                //socket descriptor
                sd = client_socket[i];
@@ -408,16 +411,15 @@ int main(int argc, char const *argv[])
                puts("Welcome message sent successfully");
 
                //add new socket to array of sockets
-               for (i = 0; i < max_clients; i++)
+               for (i = 0; i < MAX_CLIENTS; i++)
                {
                     //if position is empty
                     if( client_socket[i] == 0 )
                     {
                          client_socket[i] = new_socket;
-                         connected_users[i] = address;
 
                          for(int i = 0 ; i < 30; i++){
-                              cout<<inet_ntoa(connected_users[i].sin_addr) <<"     "<<ntohs(connected_users[i].sin_port)<<endl;
+                              cout<<inet_ntoa(connected_users[i].sin_addr) <<"     "<<ntohs(connected_users[i].sin_port)<<"socket: "<<new_socket<<endl;
                          }
 
                          printf("Adding to list of sockets as %d\n" , i);
@@ -428,7 +430,7 @@ int main(int argc, char const *argv[])
           }
 
           //else its some IO operation on some other socket
-          for (i = 0; i < max_clients; i++)
+          for (i = 0; i < MAX_CLIENTS; i++)
           {
                sd = client_socket[i];
 
@@ -439,11 +441,13 @@ int main(int argc, char const *argv[])
                     //incoming message
                     if ((valread = read( sd , buffer, 1024)) == 0)
                     {
+
                          //Somebody disconnected , get his details and print
                          getpeername(sd , (struct sockaddr*)&address ,
                          (socklen_t*)&addrlen);
                          printf("Host disconnected , ip %s , port %d \n" ,
                          inet_ntoa(address.sin_addr) , ntohs(address.sin_port));
+                         cout<<"socket disconnesso: "<<sd<<endl;
 
                          //Close the socket and mark as 0 in list for reuse
                          close( sd );
