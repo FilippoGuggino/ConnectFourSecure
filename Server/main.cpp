@@ -291,10 +291,6 @@ void checkCertificate(){
      X509_STORE_CTX_free(certvfy_ctx);
 }
 
-int indexOf(struct sockaddr_in connected_users[], struct sockaddr_in addr){
-     for(int i = 0; i < MAX_CLIENTS; i++);
-}
-
 int main(int argc, char const *argv[])
 {
      int opt = 1;
@@ -417,10 +413,6 @@ int main(int argc, char const *argv[])
                     if( client_socket[i] == 0 )
                     {
                          client_socket[i] = new_socket;
-
-                         for(int i = 0 ; i < 30; i++){
-                              cout<<inet_ntoa(connected_users[i].sin_addr) <<"     "<<ntohs(connected_users[i].sin_port)<<"socket: "<<new_socket<<endl;
-                         }
 
                          printf("Adding to list of sockets as %d\n" , i);
 

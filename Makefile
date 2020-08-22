@@ -3,7 +3,7 @@ MAKE=make
 RM=rm
 INTERFACE=-I Interface/inc -L Interface/lib
 SERVER=ps u | grep "[s]erver" | tr -s ' ' | cut -d ' ' -f2
-TERMINAL=konsole #change to your terminal
+TERMINAL=gnome-terminal #change to your terminal
 
 #targets .
 all: Client/main.cpp Server/main.cpp
