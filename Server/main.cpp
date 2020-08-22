@@ -428,7 +428,6 @@ int main(int argc, char const *argv[])
 
                if (FD_ISSET( sd , &readfds))
                {
-                    cout<<"vuole disconnettersi"<<endl;
                     //Check if it was for closing , and also read the
                     //incoming message
                     if ((valread = read( sd , buffer, 1024)) == 0)
