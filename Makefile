@@ -17,7 +17,7 @@ all: Client/main.cpp Server/main.cpp
 	ar rcs Interface/lib/libinterface.a Interface/obj/interface.o
 
 	$(cc) $(INTERFACE) Client/main.cpp -linterface -o client -lssl -lcrypto
-	$(cc) Server/main.cpp -o server -lssl -lcrypto
+	$(cc) Server/main.cpp -o server -lssl -lcrypto -pthread
 	$(TERMINAL) -e "./server" &
 	sleep 1
 	$(MAKE) client_target
