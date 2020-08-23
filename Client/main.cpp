@@ -31,7 +31,7 @@ string toString(string s){
 	}
 	return s;
 }
-
+/*
 void generateNonce(unsigned int* nonce){
   // Allocate memory for a randomly generate NONCE:
   nonce= (unsigned int*)malloc(sizeof(uint32_t));
@@ -40,7 +40,7 @@ void generateNonce(unsigned int* nonce){
   // Generate 4 bytes at random. That is my NONCE
   RAND_bytes((unsigned char*)&nonce[0],sizeof(uint32_t));
 }
-
+*/
 void authenticate_to_server(int sock,string client_nonce){
 	int ret;
 	string username;
@@ -254,8 +254,13 @@ int main(int argc, char const *argv[])
      connect(sock);
 
     //*AUTHENTICATION WITH SERVER*//
-    unsigned int* client_nonce;
-    generateNonce(client_nonce);
+    // Allocate memory for and randomly generate NONCE:
+/*  uint32_t* client_nonce;
+  generateNonce(client_nonce);
+	  */
+    uint32_t* client_nonce = (uint32_t*)malloc(sizeof(uint32_t));
+    RAND_poll();
+    RAND_bytes((unsigned char*)&client_nonce[0],sizeof(uint32_t));
     cout<<"client_nonce: "<<*client_nonce<<endl;
     // generated nonce is sent to the server
     send(sock , client_nonce , sizeof(uint32_t) , 0 );
