@@ -8,6 +8,7 @@ struct UserInfo{
   string username;
   uint32_t nonce;
   sockaddr_in address;
+  bool playing=false;
 };
 /*
 struct ChallengeRequest{

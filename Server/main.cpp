@@ -30,6 +30,9 @@ using namespace std;
 vector<struct UserInfo> connectedUsers;
 mutex connectedUsersMutex;
 
+vector<struct UserInfo> pendingUsers;
+mutex pendingUsersMutex;
+
 //utility function that allows to get a fix-sized string from nonce (10 bytes for nonce exchange and 12 for iv generation)
 string toString(uint32_t s,int i){
 
@@ -224,7 +227,9 @@ unsigned char* forgeUpdatePacket(){
 
     //plaintext to encrypt
   for(int i = 0; i < connectedUsers.size(); i++){
-    clear_size += connectedUsers[i].username.size() + 1;
+		if (connectedUsers[i].playing==false){
+    	clear_size += connectedUsers[i].username.size() + 1;
+		}
   }
 
   clear_buf = (unsigned char*) malloc(clear_size);
@@ -232,9 +237,11 @@ unsigned char* forgeUpdatePacket(){
 
   int k = 1;
   for(int i = 0; i < connectedUsers.size(); i++ , k+=user_size+1){
-    strcpy((char*)&clear_buf[k], connectedUsers[i].username.c_str());
-    user_size = connectedUsers[i].username.size();
-    clear_buf[k+user_size] = ',';
+		if(connectedUsers[i].playing==false){
+    	strcpy((char*)&clear_buf[k], connectedUsers[i].username.c_str());
+    	user_size = connectedUsers[i].username.size();
+    	clear_buf[k+user_size] = ',';
+		}
   }
 
   clear_buf[k-1] = '\0';
@@ -242,22 +249,66 @@ unsigned char* forgeUpdatePacket(){
   //now send the packet to all connected clients
   cout<<endl<<"Updated user list is sent to following users:"<<endl; //debug
   for(int i = 0; i < connectedUsers.size(); i++){
-    (connectedUsers[i].nonce)++; //nonce is incremented
-    		cout<<"-----------------------"<<endl;
-                cout<<"client username:"<<connectedUsers[i].username<<endl;//debug
-    		cout<<"client nonce:"<<connectedUsers[i].nonce<<endl;//debug
+		if (connectedUsers[i].playing==false){
+    	(connectedUsers[i].nonce)++; //nonce is incremented
+
+    			cout<<"-----------------------"<<endl;
+          cout<<"client username:"<<connectedUsers[i].username<<endl;//debug
+    			cout<<"client nonce:"<<connectedUsers[i].nonce<<endl;//debug
         	cout<<"client socket:"<<connectedUsers[i].socket<<endl;//debug
-    send_message(connectedUsers[i].socket, toString(connectedUsers[i].nonce,12), clear_buf, clear_size,connectedUsers[i].username);
+
+    		send_message(connectedUsers[i].socket, toString(connectedUsers[i].nonce,12), clear_buf, clear_size,connectedUsers[i].username);
+			}
   }
   cout<<"-----------------------"<<endl;
 
   return clear_buf;
 }
+/*
+bool addToPendingUsers(struct UserInfo user){
+	lock_guard<mutex> guard(pendingUsersMutex);
+	if(indexOf(pendingUsers, user.username) == -1){
+		struct UserInfo tmp;
+		tmp.socket = user.socket;
+		tmp.username = user.username;
+		tmp.nonce = user.nonce;
+		tmp.address = user.address;
+		pendingUsers.push_back(tmp);
+		return true;
+	}
+	cout<<"User already in pending list!"<<endl;
+	return false;
+
+}
+
+bool removeFromPendingUsers(string user){
+  //lock_guard differently from mu.lock and mu.unlock release the lock when the object is destructed(aka at the end of the function)
+  //with mu.lock/unlock if an exception raise between the twos the lock is not released
+  lock_guard<mutex> guard(pendingUsersMutex);
+  int index = indexOf(pendingUsers, user);
+  if(index == -1){
+    cout<<"User "<<user<<" doesn't exists in pending list."<<endl;
+    return false;
+  }
+  pendingUsers.erase(pendingUsers.begin() + index);
+  return true;
+} */
 
 void updateClientsWithConnectedUsersList(){
   unsigned char* packet;
   packet = forgeUpdatePacket();
   free(packet);
+}
+
+bool updatePlayerState(string username){
+	lock_guard<mutex> guard(connectedUsersMutex);
+  int index = indexOf(connectedUsers, username);
+  if(index == -1){
+    cout<<"User "<<username<<" doesn't exists."<<endl;
+    return false;
+  }
+	connectedUsers[index].playing = true;
+	return true;
 }
 
 bool removeFromConnectedUsers(string s){
@@ -269,10 +320,18 @@ bool removeFromConnectedUsers(string s){
     cout<<"User "<<s<<" doesn't exists."<<endl;
     return false;
   }
+/*	struct UserInfo tmp;
+	tmp = connectedUsers[index];
+	bool succ=addToPendingUsers(tmp);
+	if (succ==false){
+		cout<<"Error adding user to pending list!"<<endl;
+		return false;
+	} */
   connectedUsers.erase(connectedUsers.begin() + index);
   updateClientsWithConnectedUsersList();
   return true;
 }
+
 
 //synchronized function, only one thread at a time can enter this function
 //update connectedUsers
@@ -527,6 +586,34 @@ void handleUserDisconnection(string username){
     }
 }
 
+void handleUserReconnection(string username){
+	//retrieve infos of user
+/*	int index = indexOf(pendingUsers, username);
+	if(index == -1){
+		cout<<"User "<<username<<" doesn't exists in pending list."<<endl;
+		return;
+	}
+	struct UserInfo tmp;
+	tmp = pendingUsers[index];
+	//add again to connected users
+	bool success = addToConnectedUsers(tmp.socket, tmp.username,tmp.nonce, tmp.address);
+	if (success==false){
+		cout<<"Error reconnecting user!"<<endl;
+		return;
+	}
+	//remove from user that are pending
+	removeFromPendingUsers(username);
+	//send update to everyone
+	updateClientsWithConnectedUsersList(); */
+	lock_guard<mutex> guard(connectedUsersMutex);
+	int index = indexOf(connectedUsers, username);
+	if(index == -1){
+		cout<<"User "<<username<<" doesn't exists."<<endl;
+		return;
+	}
+	connectedUsers[index].playing = false;
+	updateClientsWithConnectedUsersList();
+}
 //Message from the client must be decrypted,verified and then analyzed
 int handleClientMessage(int sd,unsigned char* cphr_buf,uint32_t cphr_len,unsigned char* tag_buf,string client_nonce,string username){
   int valread = 0;
@@ -620,18 +707,21 @@ int handleClientMessage(int sd,unsigned char* cphr_buf,uint32_t cphr_len,unsigne
 
 		generateUserInfoMessage(nonce,opponent_username,opponent_socket,sender_username,ip,'1'); //send opponent's info to sender of the challenge
 		generateUserInfoMessage(nonce,sender_username,sender_socket,opponent_username,ip,'0'); //send opponent's info to sender of the challenge
-		removeFromConnectedUsers(opponent_username);
-		removeFromConnectedUsers(sender_username);
+		updatePlayerState(opponent_username);
+		updatePlayerState(sender_username);
+		updateClientsWithConnectedUsersList();
+		//removeFromConnectedUsers(opponent_username);
+		//removeFromConnectedUsers(sender_username);
 	 }
     }
     if (*type=='7'){
 
 	    string client_msg((const char*)&clear_buf[1],cphr_len-1);
 	    if (client_msg.compare("disc")==0){
-	  	handleUserDisconnection(username);
-	  	close(sd);
-	  	cout<<"User "<<username<<" correctly logged off"<<endl;
-		return 7;
+	  		handleUserDisconnection(username);
+	  		close(sd);
+	  		cout<<"User "<<username<<" correctly logged off"<<endl;
+				return 7;
 	    }
 	    else {
 	      cout<<"Invalid disconnection message received";
@@ -639,6 +729,18 @@ int handleClientMessage(int sd,unsigned char* cphr_buf,uint32_t cphr_len,unsigne
 	    }
 
 	  }
+
+		if (*type=='8'){
+			string client_msg((const char*)&clear_buf[1],cphr_len-1);
+	    if (client_msg.compare("recon")==0){
+				handleUserReconnection(username);
+				return 6;
+			}
+			else {
+				cout<<"Invalid reconnection message received "<<username<<endl;
+				//exit(1);
+			}
+		}
 
 
   return true;

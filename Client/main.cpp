@@ -707,9 +707,18 @@ int gcm_decrypt(unsigned char * ciphertext, int ciphertext_len,
 			}*/
 			string s(reinterpret_cast<char*>(clear_buf));
 			connectedUsers = split(s, ',');
-
 			aCurrentMenu->updateText(connectedUsers);
 			aCurrentMenu->printText();
+		}
+
+		void reconnectToServer(){
+			unsigned char* msg = (unsigned char*)"recon";
+			uint32_t clear_size = 6;
+			unsigned char * clear_buf=(unsigned char *)malloc(clear_size);
+			clear_buf[0]='8';
+			memcpy((char*)&clear_buf[1], msg, 5);
+			(*client_nonce)++;
+			send_message(sock, toString((* client_nonce),12), clear_buf, clear_size, "server");
 		}
 
 		void updateMenu(string choice,bool isQuitOptionSelected){
@@ -727,6 +736,7 @@ int gcm_decrypt(unsigned char * ciphertext, int ciphertext_len,
 				myturn=true;
 				close(opponent_sock);
 				nextAction=0;
+				reconnectToServer();
 			}
 			aCurrentMenu->printText();
 		}
@@ -1122,6 +1132,7 @@ void packetReceiver(int sock){
 		}
 	}
 }
+
 
 
 int main(int argc, char const *argv[])
