@@ -10,6 +10,7 @@
 #include <openssl/pem.h>
 #include <openssl/rand.h>
 #include <openssl/pem.h>
+#include <openssl/x509.h>
 #include <openssl/x509_vfy.h>
 #include <openssl/err.h> // for error descriptions
 #include <vector>
@@ -19,6 +20,115 @@
 #define PORT 8080
 
 using namespace std;
+
+//utility function that allows to get a fix-sized string from nonce
+string toString(string s){
+
+	for(int i=strlen(s.c_str());i<10;i++){  //10 is the max number of digits of nonce
+		s='0'+s;
+	}
+	return s;
+}
+
+void generateNonce(unsigned int* nonce){
+  // Allocate memory for a randomly generate NONCE:
+  nonce= (unsigned int*)malloc(sizeof(uint32_t));
+  // Seed OpenSSL PRNG
+  RAND_poll();
+  // Generate 4 bytes at random. That is my NONCE
+  RAND_bytes((unsigned char*)&nonce[0],sizeof(uint32_t));
+}
+
+void send_digital_signature(int sock,unsigned char* clear_buf,unsigned int clear_size){
+	int ret;
+
+// load my private key:
+     string prvkey_file_name="ConnectFourServer_prvkey.pem";
+   FILE* prvkey_file = fopen(prvkey_file_name.c_str(), "r");
+   if(!prvkey_file){ cerr << "Error: cannot open file '" << prvkey_file_name << "' (missing?)\n"; exit(1); }
+   EVP_PKEY* prvkey = PEM_read_PrivateKey(prvkey_file, NULL, NULL, NULL);
+   fclose(prvkey_file);
+   if(!prvkey){ cerr << "Error: PEM_read_PrivateKey returned NULL\n"; exit(1); }
+
+   // declare some useful variables:
+   const EVP_MD* md = EVP_sha256();
+
+
+   // create the signature context:
+   EVP_MD_CTX* md_ctx = EVP_MD_CTX_new();
+   if(!md_ctx){ cerr << "Error: EVP_MD_CTX_new returned NULL\n"; exit(1); }
+
+   // allocate buffer for signature:
+   unsigned char* sgnt_buf = (unsigned char*)malloc(EVP_PKEY_size(prvkey));
+   if(!sgnt_buf) { cerr << "Error: malloc returned NULL (signature too big?)\n"; exit(1); }
+
+   // sign the plaintext:
+   // (perform a single update on the whole plaintext,
+   // assuming that the plaintext is not huge)
+   ret = EVP_SignInit(md_ctx, md);
+   if(ret == 0){ cerr << "Error: EVP_SignInit returned " << ret << "\n"; exit(1); }
+   ret = EVP_SignUpdate(md_ctx, clear_buf, clear_size);
+   if(ret == 0){ cerr << "Error: EVP_SignUpdate returned " << ret << "\n"; exit(1); }
+   unsigned int sgnt_size;
+   ret = EVP_SignFinal(md_ctx, sgnt_buf, &sgnt_size, prvkey);
+   if(ret == 0){ cerr << "Error: EVP_SignFinal returned " << ret << "\n"; exit(1); }
+
+   cout<<sgnt_size<<endl;
+   send(sock , sgnt_buf , sgnt_size , 0 );
+
+
+   // delete the digest and the private key from memory:
+   EVP_MD_CTX_free(md_ctx);
+   EVP_PKEY_free(prvkey);
+
+   // deallocate buffers:
+  // free(clear_buf);  --> not necessary since it hasn't been allocated in heap
+   free(sgnt_buf);
+}
+
+void verify_client_signature(string username,unsigned char* sgnt_buf,unsigned int sgnt_size,string client_nonce){
+
+   int ret;
+
+  // load the client's public key:
+   string pubkey_file_name=username+"_pubkey.pem";
+   FILE* pubkey_file = fopen(pubkey_file_name.c_str(), "r");
+   if(!pubkey_file){ cerr << "Error: cannot open file '" << pubkey_file_name << "' (missing?)\n"; exit(1); }
+   EVP_PKEY* pubkey = PEM_read_PUBKEY(pubkey_file, NULL, NULL, NULL);
+   fclose(pubkey_file);
+   if(!pubkey){ cerr << "Error: PEM_read_PUBKEY returned NULL\n"; exit(1); }
+
+   // declare some useful variables:
+   const EVP_MD* md = EVP_sha256();
+
+   //create the plaintext
+   string s=username+client_nonce;
+   unsigned char* clear_buf=(unsigned char*)s.c_str();
+   unsigned int clear_size=strlen((const char*)clear_buf);
+
+   // create the signature context:
+   EVP_MD_CTX* md_ctx = EVP_MD_CTX_new();
+   if(!md_ctx){ cerr << "Error: EVP_MD_CTX_new returned NULL\n"; exit(1); }
+
+   // verify the plaintext:
+   // (perform a single update on the whole plaintext)
+   ret = EVP_VerifyInit(md_ctx, md);
+   if(ret == 0){ cerr << "Error: EVP_VerifyInit returned " << ret << "\n"; exit(1); }
+   ret = EVP_VerifyUpdate(md_ctx, clear_buf, clear_size);
+   if(ret == 0){ cerr << "Error: EVP_VerifyUpdate returned " << ret << "\n"; exit(1); }
+   ret = EVP_VerifyFinal(md_ctx, sgnt_buf, sgnt_size, pubkey);
+   if(ret != 1){ // it is 0 if invalid signature, -1 if some other error, 1 if success.
+      cerr << "Error: EVP_VerifyFinal returned " << ret << " (invalid signature?)\n";
+      exit(1);
+   }
+
+   // deallocate buffers:
+//   free(clear_buf);
+   free(sgnt_buf);
+   EVP_PKEY_free(pubkey);
+   EVP_MD_CTX_free(md_ctx);
+
+}
 /*
 // SERVER SESSION KEY GENERATION
 
@@ -172,123 +282,36 @@ void serverSessionKeyGeneration(){
 */
 
 
-void checkCertificate(){
-     int ret; // used for return values
+void authenticate_to_client(int sock, string server_nonce){
+	int ret;
 
-     // load the CA's certificate:
-     string cacert_file_name;
-     cout << "Please, type the PEM file containing a trusted CA's certificate: ";
-     getline(cin, cacert_file_name);
-     if(!cin) { cerr << "Error during input\n"; return;}
-     FILE* cacert_file = fopen(cacert_file_name.c_str(), "r");
-     if(!cacert_file){ cerr << "Error: cannot open file '" << cacert_file_name << "' (missing?)\n"; return;}
-     X509* cacert = PEM_read_X509(cacert_file, NULL, NULL, NULL);
-     fclose(cacert_file);
-     if(!cacert){ cerr << "Error: PEM_read_X509 returned NULL\n"; return; }
+  // open the certificate file:
+	string cert_file_name="ConnectFourServer_cert.pem";
+	FILE* cert_file = fopen(cert_file_name.c_str(), "r");
+	if(!cert_file){ cerr << "Error: cannot open file '" << cert_file_name << "' (missing?)\n"; return; }
 
-     // load the CRL:
-     string crl_file_name;
-     cout << "Please, type the PEM file containing a trusted CRL: ";
-     getline(cin, crl_file_name);
-     if(!cin) { cerr << "Error during input\n"; return; }
-     FILE* crl_file = fopen(crl_file_name.c_str(), "r");
-     if(!crl_file){ cerr << "Error: cannot open file '" << crl_file_name << "' (missing?)\n"; return; }
-     X509_CRL* crl = PEM_read_X509_CRL(crl_file, NULL, NULL, NULL);
-     fclose(crl_file);
-     if(!crl){ cerr << "Error: PEM_read_X509_CRL returned NULL\n"; return; }
+	// get the certificate size:
+	// (assuming no failures in fseek() and ftell())
+  fseek(cert_file, 0, SEEK_END);
+  long int cert_size = ftell(cert_file);
+	fseek(cert_file, 0, SEEK_SET);
 
-     // build a store with the CA's certificate and the CRL:
-     X509_STORE* store = X509_STORE_new();
-     if(!store) { cerr << "Error: X509_STORE_new returned NULL\n" << ERR_error_string(ERR_get_error(), NULL) << "\n"; return; }
-     ret = X509_STORE_add_cert(store, cacert);
-     if(ret != 1) { cerr << "Error: X509_STORE_add_cert returned " << ret << "\n" << ERR_error_string(ERR_get_error(), NULL) << "\n"; return; }
-     ret = X509_STORE_add_crl(store, crl);
-     if(ret != 1) { cerr << "Error: X509_STORE_add_crl returned " << ret << "\n" << ERR_error_string(ERR_get_error(), NULL) << "\n"; return; }
-     ret = X509_STORE_set_flags(store, X509_V_FLAG_CRL_CHECK);
-     if(ret != 1) { cerr << "Error: X509_STORE_set_flags returned " << ret << "\n" << ERR_error_string(ERR_get_error(), NULL) << "\n"; return; }
+  //read the certificate
+  unsigned char* cert_buf = (unsigned char*)malloc(cert_size);
+  ret=fread(cert_buf, 1, cert_size, cert_file);
+  if(ret < cert_size) { cerr << "Error while reading file '" << cert_file_name << "'\n"; exit(1); }
+  fclose(cert_file);
 
-     // load the peer's certificate:
-     string cert_file_name;
-     cout << "Please, type the PEM file containing peer's certificate: ";
-     getline(cin, cert_file_name);
-     if(!cin) { cerr << "Error during input\n"; return; }
-     FILE* cert_file = fopen(cert_file_name.c_str(), "r");
-     if(!cert_file){ cerr << "Error: cannot open file '" << cert_file_name << "' (missing?)\n"; return; }
-     X509* cert = PEM_read_X509(cert_file, NULL, NULL, NULL);
-     fclose(cert_file);
-     if(!cert){ cerr << "Error: PEM_read_X509 returned NULL\n"; return; }
+  send(sock , (const char*)&cert_size , sizeof(uint32_t) , 0 );  //certificate size
+  send(sock , cert_buf , cert_size , 0 );
 
-     // verify the certificate:
-     X509_STORE_CTX* certvfy_ctx = X509_STORE_CTX_new();
-     if(!certvfy_ctx) { cerr << "Error: X509_STORE_CTX_new returned NULL\n" << ERR_error_string(ERR_get_error(), NULL) << "\n"; return; }
-     ret = X509_STORE_CTX_init(certvfy_ctx, store, cert, NULL);
-     if(ret != 1) { cerr << "Error: X509_STORE_CTX_init returned " << ret << "\n" << ERR_error_string(ERR_get_error(), NULL) << "\n"; return; }
-     ret = X509_verify_cert(certvfy_ctx);
-     if(ret != 1) { cerr << "Error: X509_verify_cert returned " << ret << "\n" << ERR_error_string(ERR_get_error(), NULL) << "\n"; return; }
+  // create the plaintext to be signed
+  string s="Hello!"+server_nonce;
+	unsigned char* clear_buf=(unsigned char*)s.c_str();
+	unsigned int clear_size=strlen((const char*)clear_buf);
 
-     // print the successful verification to screen:
-     char* tmp = X509_NAME_oneline(X509_get_subject_name(cert), NULL, 0);
-     char* tmp2 = X509_NAME_oneline(X509_get_issuer_name(cert), NULL, 0);
-     cout << "Certificate of \"" << tmp << "\" (released by \"" << tmp2 << "\") verified successfully\n";
-     free(tmp);
-     free(tmp2);
+	send_digital_signature(sock,clear_buf,clear_size);
 
-     // load the signature file:
-     string sgnt_file_name;
-     cout << "Please, type the signature file: ";
-     getline(cin, sgnt_file_name);
-     if(!cin) { cerr << "Error during input\n"; return; }
-     FILE* sgnt_file = fopen(sgnt_file_name.c_str(), "rb");
-     if(!sgnt_file) { cerr << "Error: cannot open file '" << sgnt_file_name << "' (file does not exist?)\n"; return; }
-
-     // get the file size:
-     // (assuming no failures in fseek() and ftell())
-     fseek(sgnt_file, 0, SEEK_END);
-     long int sgnt_size = ftell(sgnt_file);
-     fseek(sgnt_file, 0, SEEK_SET);
-
-     // read the signature from file:
-     unsigned char* sgnt_buf = (unsigned char*)malloc(sgnt_size);
-     if(!sgnt_buf) { cerr << "Error: malloc returned NULL (file too big?)\n"; return; }
-     ret = fread(sgnt_buf, 1, sgnt_size, sgnt_file);
-     if(ret < sgnt_size) { cerr << "Error while reading file '" << sgnt_file_name << "'\n"; return; }
-     fclose(sgnt_file);
-
-     // declare some useful variables:
-     const EVP_MD* md = EVP_sha256();
-     const char clear_buf[] = "Hello, peer!\n";
-     int clear_size = strlen(clear_buf);
-
-     // create the signature context:
-     EVP_MD_CTX* md_ctx = EVP_MD_CTX_new();
-     if(!md_ctx){ cerr << "Error: EVP_MD_CTX_new returned NULL\n"; return; }
-
-     // verify the plaintext:
-     // (perform a single update on the whole plaintext,
-     // assuming that the plaintext is not huge)
-     ret = EVP_VerifyInit(md_ctx, md);
-     if(ret == 0){ cerr << "Error: EVP_VerifyInit returned " << ret << "\n"; return; }
-     ret = EVP_VerifyUpdate(md_ctx, clear_buf, clear_size);
-     if(ret == 0){ cerr << "Error: EVP_VerifyUpdate returned " << ret << "\n"; return; }
-     ret = EVP_VerifyFinal(md_ctx, sgnt_buf, sgnt_size, X509_get_pubkey(cert));
-     if(ret == -1){ // it is 0 if invalid signature, -1 if some other error, 1 if success.
-          cerr << "Error: EVP_VerifyFinal returned " << ret << " (invalid signature?)\n";
-          return;
-     }else if(ret == 0){
-          cerr << "Error: Invalid signature!\n";
-          return;
-     }
-
-     // print the successful signature verification to screen:
-     cout << "The subject really said \"" << "Hello, peer!\n" << "\"\n";
-
-     // deallocate data:
-     EVP_MD_CTX_free(md_ctx);
-     X509_free(cert);
-     X509_STORE_free(store);
-     //X509_free(cacert); // already deallocated by X509_STORE_free()
-     //X509_CRL_free(crl); // already deallocated by X509_STORE_free()
-     X509_STORE_CTX_free(certvfy_ctx);
 }
 
 int main(int argc, char const *argv[])
@@ -426,6 +449,77 @@ int main(int argc, char const *argv[])
           {
                sd = client_socket[i];
 
+               ///*AUTHENTICATION WITH CLIENT*///
+
+               unsigned int* server_nonce;
+               generateNonce(server_nonce);
+               cout<<"server_nonce: "<<*server_nonce<<endl;
+
+          		 //nonce generated by the client is received
+          		 unsigned int client_nonce;
+          		 if ((valread = read( sd , &client_nonce, sizeof(uint32_t))) == 0)
+               {
+            		cout<<"client disconnected"<<endl;
+            		exit(1);
+          		 }
+          		 else
+          		 	cout<<"client_nonce: "<<client_nonce<<endl;
+          		 // generated nonce is sent to the server
+          		 send(sd , server_nonce , sizeof(uint32_t) , 0 );
+
+            	 //Digital signature + certificate must be sent to the client for authentication
+          		 authenticate_to_client(sd,toString(to_string(*server_nonce))); //to_string() to get variable size string from int.toString() to get fixed size string from variable string.
+
+          		 /*digital signature from the client must be verified.*/
+
+          		 //size of next message is received
+          		 unsigned int client_sign_size;
+          		 if ((valread = read( sd , &client_sign_size, sizeof(uint32_t))) == 0)
+          		 {
+          			cout<<"client disconnected"<<endl;
+          			exit(1);
+          		 }
+          		 //digital signature of the client is received.
+          		 unsigned char* client_sign= (unsigned char*)malloc(client_sign_size);
+          		 if ((valread = read( sd , client_sign, client_sign_size)) == 0)
+               {
+          		     cout<<"client disconnected"<<endl;
+          		     exit(1);
+          		 }
+
+          		 //size of next message is received
+          		 unsigned int size;
+          		 if ((valread = read( sd , &size, sizeof(uint32_t))) == 0)
+          		 {
+          	      cout<<"client disconnected"<<endl;
+          			  exit(1);
+          		 }
+
+
+          		 //username of the client is received
+          		 unsigned char* username= (unsigned char*)malloc(size);
+          		 if ((valread = read( sd , username, size)) == 0)
+          		 {
+          		     cout<<"client disconnected"<<endl;
+          			   exit(1);
+          		 }
+
+          		 unsigned char* uc;
+          		 std::string s( reinterpret_cast<char const*>(username), valread ) ;
+          		 verify_client_signature(s,client_sign,client_sign_size,toString(to_string(client_nonce)));
+          	   cout<<"Client authentication completed!"<<endl;
+
+          		 // create the plaintext to be signed
+
+          		 s="EndAuthentication"+toString(to_string(*server_nonce));
+          	   cout<<"plaintext da segnare:"<<s<<endl;
+          	   unsigned char* clear_buf=(unsigned char*)s.c_str();
+          	   unsigned int clear_size=strlen((const char*)clear_buf);
+
+            	 send_digital_signature(sd,clear_buf,clear_size);
+
+            	 cout<<"Authentication completed!"<<endl;
+
                if (FD_ISSET( sd , &readfds))
                {
                     //Check if it was for closing , and also read the
@@ -456,9 +550,8 @@ int main(int argc, char const *argv[])
                }
           }
      }
-     //authentication by Public Key
 
-     //send certificate to client
+
 
      cin.get();
      cin.get();
