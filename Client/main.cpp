@@ -307,7 +307,6 @@ int handleErrorsDH(){
 	exit(1);
 }
 
-
 void serverSessionKeyGeneration(int &socket){
 
  //DH
@@ -471,7 +470,7 @@ int main(int argc, char const *argv[])
   	cout<<"server disconnected"<<endl;
   	exit(1);
        }
-  //create the plaintext for signature verification
+  	//create the plaintext for signature verification
    string s=toString(to_string(server_nonce));
    unsigned char* clear_buf=(unsigned char*)s.c_str();
    unsigned int clear_size=strlen((const char*)clear_buf);
@@ -488,7 +487,7 @@ int main(int argc, char const *argv[])
   	    exit(1);
    }
    //create the plaintext for signature verification
-   s = toString(to_string(server_nonce));
+   s = "EndAuthentication" + toString(to_string(server_nonce));
    clear_buf = (unsigned char*)s.c_str();
    clear_size=strlen((const char*)clear_buf);
    verify_digital_signature(server_sign,clear_buf,clear_size);
