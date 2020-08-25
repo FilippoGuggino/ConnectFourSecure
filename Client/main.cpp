@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <sys/socket.h>
+#include <sys/file.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <netinet/in.h>
@@ -16,12 +17,20 @@
 #include <sys/ioctl.h>
 #include <openssl/bio.h>
 #include <openssl/x509.h>
-//#include "interface.h"
+#include <fcntl.h> //for asynchronous socket
+#include <sstream>
+#include <signal.h>
+#include "interface.h"
 
 #define PORT 8080
 #define BUFFER_SIZE 1024
 
 using namespace std;
+
+int sock;
+vector<string> connectedUsers;
+string username;
+BaseInterface* aCurrentMenu = new FirstMenu(connectedUsers);
 
 //utility function that allows to get a fix-sized string from nonce
 string toString(string s){
@@ -31,6 +40,25 @@ string toString(string s){
 	}
 	return s;
 }
+
+void authenticate_to_server(int sock,string client_nonce, int id){
+	int ret;
+
+//digit the username to be sent to the server
+   cout << "Please, type your username: ";
+   cin>>username;
+   if(!cin) { cerr << "Error during input\n"; exit(1); }
+
+
+	// load my private key:
+   string prvkey_file_name="Client/PrvKeys/user"+to_string(id)+"_prvkey.pem";
+   FILE* prvkey_file = fopen(prvkey_file_name.c_str(), "r");
+   if(!prvkey_file){ cerr << "Error: cannot open file '" << prvkey_file_name << "' (missing?)\n"; exit(1); }
+   EVP_PKEY* prvkey = PEM_read_PrivateKey(prvkey_file, NULL, NULL, NULL);
+   fclose(prvkey_file);
+   if(!prvkey){ cerr << "Error: PEM_read_PrivateKey returned NULL\n"; exit(1); }
+
+   // declare some useful variables:
 /*
 void generateNonce(unsigned int* nonce){
   // Allocate memory for a randomly generate NONCE:
@@ -41,25 +69,6 @@ void generateNonce(unsigned int* nonce){
   RAND_bytes((unsigned char*)&nonce[0],sizeof(uint32_t));
 }
 */
-void authenticate_to_server(int sock,string client_nonce){
-	int ret;
-	string username;
-
-//digit the username to be sent to the server
-   cout << "Please, type your username: ";
-   getline(cin, username);
-   if(!cin) { cerr << "Error during input\n"; exit(1); }
-
-
-	// load my private key:
-   string prvkey_file_name="Client/prvkey.pem";
-   FILE* prvkey_file = fopen(prvkey_file_name.c_str(), "r");
-   if(!prvkey_file){ cerr << "Error: cannot open file '" << prvkey_file_name << "' (missing?)\n"; exit(1); }
-   EVP_PKEY* prvkey = PEM_read_PrivateKey(prvkey_file, NULL, NULL, NULL);
-   fclose(prvkey_file);
-   if(!prvkey){ cerr << "Error: PEM_read_PrivateKey returned NULL\n"; exit(1); }
-
-   // declare some useful variables:
    const EVP_MD* md = EVP_sha256();
 
    // create the plaintext to be signed
@@ -90,15 +99,15 @@ void authenticate_to_server(int sock,string client_nonce){
    send(sock , sgnt_buf , sgnt_size , 0 ); //DigSig(username+nonce)
    unsigned int user_size=username.size();
    send(sock , (const char*)&user_size, sizeof(uint32_t) , 0 );	//username size
-   send(sock , username.c_str() , 10 , 0 );	//username in clear
+   send(sock , username.c_str() , strlen(username.c_str()) , 0 );	//username in clear
 
    // delete the digest and the private key from memory:
    EVP_MD_CTX_free(md_ctx);
    EVP_PKEY_free(prvkey);
 
    free(sgnt_buf);
-
 }
+
 void validate_server_certificate(unsigned char* server_cert){
      int ret; // used for return values
 
@@ -252,8 +261,7 @@ int connect(int &sock){
 
 // SERVER SESSION KEY GENERATION
 
-static DH *get_dh2048_auto(void)
-{
+static DH *get_dh2048_auto(void){
     static unsigned char dhp_2048[] = {
         0xF9, 0xEA, 0x2A, 0x73, 0x80, 0x26, 0x19, 0xE4, 0x9F, 0x4B,
         0x88, 0xCB, 0xBF, 0x49, 0x08, 0x60, 0xC5, 0xBE, 0x41, 0x42,
@@ -418,10 +426,69 @@ void serverSessionKeyGeneration(int &socket){
 
 }
 
+vector<string> split(const string &s, char delim) {
+  stringstream ss(s);
+  string item;
+  vector<string> elems;
+  while (getline(ss, item, delim)) {
+		if(item.compare(username) != 0)
+    	elems.push_back(item);
+  }
+  return elems;
+}
+
+void printConnectedUsers(){
+  //cout<<"Utenti Connessi:"<<endl;
+  for(int i = 0; i < connectedUsers.size(); i++){
+    cout<<connectedUsers[i]<<endl;
+  }
+}
+
+void updateConnectedUsers(){
+	unsigned char tmp[500];
+	int valread;
+	//TODO needs to be decrypted
+	if ((valread = read( sock , tmp, MSG_WAITALL)) == 0){
+			 cout<<"server disconnected"<<endl;
+			 exit(1);
+	}
+	string s(reinterpret_cast<char*>(tmp));
+	connectedUsers = split(s, ',');
+
+	aCurrentMenu->updateText(connectedUsers);
+	aCurrentMenu->printText();
+}
+
+void packetHandler(int signum){
+	int valread;
+	uint8_t type;
+	if ((valread = read( sock , &type, sizeof(uint8_t))) == 0){
+			 cout<<"server disconnected"<<endl;
+			 exit(1);
+	}
+
+	//cout<<"tipo ricevuto "<<(uint32_t)type<<endl;
+	switch(type){
+		case 5:
+			//cout<<"aggiorno"<<endl;
+			updateConnectedUsers();
+			break;
+	}
+}
+
 int main(int argc, char const *argv[])
 {
-     int sock,valread;
+
+     int valread;
      connect(sock);
+
+		 if(argc != 2){
+			 cout<<"use only one parameter"<<endl;
+			 //exit(1);
+		 }
+
+		 int id = atoi(argv[1]);
+		 cout<<"id: "<<id<<endl;
 
     //*AUTHENTICATION WITH SERVER*//
     // Allocate memory for and randomly generate NONCE:
@@ -471,14 +538,14 @@ int main(int argc, char const *argv[])
   	exit(1);
        }
   	//create the plaintext for signature verification
-   string s=toString(to_string(server_nonce));
+   string s="Hello"+toString(to_string(server_nonce));
    unsigned char* clear_buf=(unsigned char*)s.c_str();
    unsigned int clear_size=strlen((const char*)clear_buf);
    verify_digital_signature(server_sign,clear_buf,clear_size);
    cout<<"Server authentication completed!"<<endl;
 
    //Digital signature + pub key must be sent to the server for authentication
-   authenticate_to_server(sock,toString(to_string(*client_nonce)));
+   authenticate_to_server(sock,toString(to_string(*client_nonce)), id);
 
    //digital signature of end authentication from the server must be verified.
    server_sign= (unsigned char*)malloc(256);
@@ -494,12 +561,28 @@ int main(int argc, char const *argv[])
 
    cout<<"Authentication completed!"<<endl;
 
-     /*vector<string> prova;
-     prova.push_back("giovanni");
-     prova.push_back("francesco");
-     prova.push_back("emilia");
+	 //INTERRUPT DRIVEN CONNECTION
 
-     BaseInterface* aCurrentMenu = new FirstMenu(prova); // We have a pointer to our menu. We're using a pointer so we can change the menu seamlessly.
+	 int io_handler(), on;
+	 pid_t pgrp;
+
+	 on=1;
+	 signal(SIGIO, packetHandler);
+
+	 // Set the process receiving SIGIO/SIGURG signals to us
+
+	 pgrp=getpid();
+	 if (ioctl(sock, SIOCSPGRP, &pgrp) < 0) {
+	 perror("ioctl F_SETOWN");
+	 exit(1);
+	 }
+
+	 // Allow receipt of asynchronous I/O signals
+	 if (ioctl(sock, FIOASYNC, &on) < 0) {
+	 perror("ioctl F_SETFL, FASYNC");
+	 exit(1);
+	 }
+
      bool isQuitOptionSelected = false;
      while (!isQuitOptionSelected) // We're saying that, as long as the quit option wasn't selected, we keep running
      {
@@ -511,35 +594,11 @@ int main(int argc, char const *argv[])
      BaseInterface* aNewMenuPointer = aCurrentMenu->getNextMenu(choice, isQuitOptionSelected); // This will return a new object, of the type of the new menu we want. Also checks if quit was selected
 
      if (aNewMenuPointer && aNewMenuPointer != aCurrentMenu) // This is why we set the pointer to 0 when we were creating the new menu - if it's 0, we didn't create a new menu, so we will stick with the old one
-     {sto aspettando client_sign: 0
-
-     delete aCurrentMenu; // We're doing this to clean up the old menu, and not leak memory.
-     aCurrentMenu = aNewMenuPointer; // We're updating the 'current menu' with the new menu we just created
+     {
+			 delete aCurrentMenu; // We're doing this to clean up the old menu, and not leak memory.
+			 aCurrentMenu = aNewMenuPointer; // We're updating the 'current menu' with the new menu we just created
+		 }
 }
-}*/
-
-
-/*INTERRUPT DRIVEN CONNECTION
-int io_handler(), on;
-pid_t pgrp;
-
-on=1;
-signal(SIGIO, io_handler);
-
-// Set the process receiving SIGIO/SIGURG signals to us
-
-pgrp=getpid();
-if (ioctl(s, SIOCSPGRP, &pgrp) < 0) {
-perror("ioctl F_SETOWN");
-exit(1);
-}
-
-// Allow receipt of asynchronous I/O signals
-
-if (ioctl(s, FIOASYNC, &on) < 0) {
-perror("ioctl F_SETFL, FASYNC");
-exit(1);
-}*/
 
 
 /*Grid g;
@@ -671,10 +730,12 @@ cout<<"crypted size: "<< cphr_size<<endl;
 // deallocate buffers:
 free(cphr_buf);
 free(iv);
-
-cin.get();*/
+*/
 cin.get();
+cin.get();
+shutdown(sock, 0);
 close(sock);
+cout<<strerror(errno)<<endl;
 
 return 0;
 }

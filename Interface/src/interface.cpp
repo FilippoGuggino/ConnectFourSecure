@@ -29,6 +29,9 @@ void BaseInterface::printText(){
      cout << m_MenuText << endl;
 }
 
+void BaseInterface::updateText(vector<string> user_list){
+}
+
 /*****************************
 
      FirstMenu
@@ -41,6 +44,7 @@ FirstMenu::FirstMenu(vector<string> user_list){
 }
 
 void FirstMenu::updateText(vector<string> user_list){
+    this->user_list = user_list;
      m_MenuText = "Users currently online:\n";
      for(int i = 0; i < user_list.size(); i++){
           m_MenuText += to_string(i+1) + ". " + user_list.at(i) + "\n";
@@ -246,4 +250,7 @@ bool GameInterface::checkWinCondition(int row, int col){
 	if(diagonal2 >= 4) return true;
 
 	return false;
+}
+
+void GameInterface::updateText(vector<string> user_list){
 }

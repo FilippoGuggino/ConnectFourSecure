@@ -10,9 +10,11 @@ all: Client/main.cpp Server/main.cpp
 	#Optional parameter:
 	#	num_cl=<number of client to open>
 
+	#kill previously started servers and clients
 	kill -9 $$(ps u | grep "[s]erver" | tr -s ' ' | cut -d ' ' -f2) || true
 	kill -9 $$(ps u | grep "[c]lient" | tr -s ' ' | cut -d ' ' -f2) || true
 
+	#compile libraries
 	$(cc) -I ./Interface/inc -c Interface/src/interface.cpp -o Interface/obj/interface.o
 	ar rcs Interface/lib/libinterface.a Interface/obj/interface.o
 
@@ -24,8 +26,12 @@ all: Client/main.cpp Server/main.cpp
 
 #another target for client
 client_target:
-	@for n in $$(seq 1 $(num_cl)) ; do \
-		$(TERMINAL) -e "./client" & \
+	n=1 ; while [[ $$n -le $(num_cl) ]] ; do \
+		echo $$n; \
+		$(TERMINAL) -e "./client $$n" & \
+		((n = n + 1)) ; \
+  done
+	#open n=num_cl number of clients, useful for debugging stuff
 	done
 
 

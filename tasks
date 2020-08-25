@@ -26,6 +26,7 @@ Type
 1 = autenticazione
 2 = voglio sfidare <tizio>
 3 = <tizio> ti vuole sfidare
+4 = update with connected users packet
 
 Esempio Filippo manda richiesta di sfida a Zaccaria
 -Filippo crea nonce e lo invia al server

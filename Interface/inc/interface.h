@@ -1,16 +1,13 @@
 #include <string>
 #include <vector>
+#include <cstdlib>
+#include <stdlib.h>
 #define ROWS 6
 #define COLUMNS 7
 
 using namespace std;
 
 enum cell {empty, red, blue};
-
-struct ChallengeRequest{
-     char username[25];
-     char nonce;
-};
 
 class BaseInterface{
      protected:
@@ -21,6 +18,7 @@ class BaseInterface{
           virtual ~BaseInterface() { } // This is the virtual destructor. It must be made virtual, else you get memory leaks - it's not a quick explaination, I recommend you read up on it
           virtual BaseInterface *getNextMenu(int, bool&) = 0; // This is a 'pure virtual method', as shown by the "= 0". It means it doesn't do anything. It's used to set up the framework
           virtual void printText();
+          virtual void updateText(vector<string> user_list);
           virtual void clear();
 };
 
@@ -46,6 +44,7 @@ class GameInterface : public BaseInterface{
           void updateGrid();
           bool setCell(int col, cell color);
           bool checkWinCondition(int row, int col);
+          void updateText(vector<string> user_list);
 };
 
 /*
