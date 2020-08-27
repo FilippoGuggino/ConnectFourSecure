@@ -22,6 +22,17 @@ struct ChallengeRequest{
      unint8_t response; (optional)
 };
 
+struct MoveMessage{
+  uint8_t column;
+}
+
+struct DispatchUserInfoForChallenge{
+  uint8_t type;
+  unsigned char nonce[12];
+  struct sockaddr_in ip;
+  unsigned char* pub_key;
+}
+
 Type
 1 = autenticazione
 2 = voglio sfidare <tizio>  (from server point of view)
