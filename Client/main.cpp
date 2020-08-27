@@ -1,4 +1,5 @@
 #include <iostream>
+#include <iomanip>
 #include <stdlib.h>
 #include <stdio.h>
 #include <sys/socket.h>
@@ -29,6 +30,8 @@ using namespace std;
 
 int sock;
 vector<string> connectedUsers;
+int id;
+uint32_t * client_nonce;
 string username;
 BaseInterface* aCurrentMenu = new FirstMenu(connectedUsers);
 
@@ -95,11 +98,13 @@ void generateNonce(unsigned int* nonce){
    ret = EVP_SignFinal(md_ctx, sgnt_buf, &sgnt_size, prvkey);
    if(ret == 0){ cerr << "Error: EVP_SignFinal returned " << ret << "\n"; exit(1); }
 
+
    send(sock , (const char*)&sgnt_size, sizeof(uint32_t) , 0 );	//client's sign size
    send(sock , sgnt_buf , sgnt_size , 0 ); //DigSig(username+nonce)
    unsigned int user_size=username.size();
    send(sock , (const char*)&user_size, sizeof(uint32_t) , 0 );	//username size
    send(sock , username.c_str() , strlen(username.c_str()) , 0 );	//username in clear
+
 
    // delete the digest and the private key from memory:
    EVP_MD_CTX_free(md_ctx);
@@ -259,6 +264,169 @@ int connect(int &sock){
      return sock;
 }
 
+
+int handleErrors() {
+  printf("An error occourred.\n");
+  exit(1);
+}
+
+//Symmetric decryption through session key
+int gcm_decrypt(unsigned char * ciphertext, int ciphertext_len,
+  unsigned char * aad, int aad_len,
+  unsigned char * tag,
+  unsigned char * key,
+  unsigned char * iv, int iv_len,
+  unsigned char * plaintext) {
+  EVP_CIPHER_CTX * ctx;
+  int len;
+  int plaintext_len;
+  int ret;
+  /* Create and initialise the context */
+  if (!(ctx = EVP_CIPHER_CTX_new()))
+    handleErrors();
+  if (!EVP_DecryptInit(ctx, EVP_aes_128_gcm(), key, iv))
+    handleErrors();
+  //Provide any AAD data.
+  if (!EVP_DecryptUpdate(ctx, NULL, & len, aad, aad_len))
+    handleErrors();
+  //Provide the message to be decrypted, and obtain the plaintext output.
+  if (!EVP_DecryptUpdate(ctx, plaintext, & len, ciphertext, ciphertext_len))
+    handleErrors();
+  plaintext_len = len;
+  /* Set expected tag value. Works in OpenSSL 1.0.1d and later */
+  if (!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG, 16, tag))
+    handleErrors();
+  /*
+   * Finalise the decryption. A positive return value indicates success,
+   * anything else is a failure - the plaintext is not trustworthy.
+   */
+  ret = EVP_DecryptFinal(ctx, plaintext + len, & len);
+
+  /* Clean up */
+  EVP_CIPHER_CTX_cleanup(ctx);
+  /*
+  cout<<"iv:"<<endl;	//debug
+		 BIO_dump_fp (stdout, (const char *)iv, 12);
+ 
+  cout<<"chiave usata:"<<endl;	//debug
+		 BIO_dump_fp (stdout, (const char *)key, 128);
+   
+  cout<<"messaggio cifrato:"<<endl;	//debug
+		 BIO_dump_fp (stdout, (const char *)ciphertext, ciphertext_len);
+   cout<<"messaggio decifrato:"<<endl;	//debug
+		 BIO_dump_fp (stdout, (const char *)plaintext, plaintext_len);
+	 */
+  if (ret > 0) {
+    /* Success */
+    plaintext_len += len;
+    return plaintext_len;
+  } else {
+
+    /* Verify failed */
+    return -1;
+  }
+}
+//Symmetric encryption through session key
+int gcm_encrypt(unsigned char * plaintext, int plaintext_len,
+  unsigned char * aad, int aad_len,
+  unsigned char * key,
+  unsigned char * iv, int iv_len,
+  unsigned char * ciphertext,
+  unsigned char * tag) {
+  EVP_CIPHER_CTX * ctx;
+  int len;
+  int ciphertext_len;
+  // Create and initialise the context
+  if (!(ctx = EVP_CIPHER_CTX_new()))
+    handleErrors();
+  // Initialise the encryption operation.
+  if (1 != EVP_EncryptInit(ctx, EVP_aes_128_gcm(), key, iv))
+    handleErrors();
+
+  //Provide any AAD data. This can be called zero or more times as required
+  if (1 != EVP_EncryptUpdate(ctx, NULL, & len, aad, aad_len))
+    handleErrors();
+
+  if (1 != EVP_EncryptUpdate(ctx, ciphertext, & len, plaintext, plaintext_len))
+    handleErrors();
+  ciphertext_len = len;
+  //Finalize Encryption
+  if (1 != EVP_EncryptFinal(ctx, ciphertext + len, & len))
+    handleErrors();
+  ciphertext_len += len;
+  /* Get the tag */
+  if (1 != EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_GET_TAG, 16, tag))
+    handleErrors();
+    /*
+      cout<<"iv:"<<endl;	//debug
+		 BIO_dump_fp (stdout, (const char *)iv, 12);
+ 
+  cout<<"chiave usata:"<<endl;	//debug
+		 BIO_dump_fp (stdout, (const char *)key, 128);
+   
+  cout<<"messaggio cifrato:"<<endl;	//debug
+		 BIO_dump_fp (stdout, (const char *)ciphertext, ciphertext_len);
+   cout<<"messaggio decifrato:"<<endl;	//debug
+		 BIO_dump_fp (stdout, (const char *)plaintext, plaintext_len);
+    */
+  /* Clean up */
+  EVP_CIPHER_CTX_free(ctx);
+  return ciphertext_len;
+}
+
+
+unsigned char* get_session_key(int sock){
+	int ret;
+
+	// retrieve shared secret from file
+	  string seskey_file_name ="Client/SessionKeys/user"+to_string(id)+"_seskey.txt";
+	  FILE * seskey_file = fopen(seskey_file_name.c_str(), "r");
+	  if (!seskey_file) {
+	    cerr << "Error: cannot open file '" << seskey_file_name << "' (missing?)\n";
+	    exit(1);
+	  }
+	  
+	  // get the ss size:
+	  // (assuming no failures in fseek() and ftell())
+	  //TODO we can't assume any failure
+	  fseek(seskey_file, 0, SEEK_END);
+	  long int sskey_size = ftell(seskey_file);
+	  fseek(seskey_file, 0, SEEK_SET);
+
+	  //read the ss
+	  unsigned char* sskey_buf = (unsigned char*)malloc(sskey_size);
+	  ret=fread(sskey_buf, 1, sskey_size, seskey_file);
+	  if(ret < sskey_size) { cerr << "Error while reading file '" << seskey_file_name << "'\n"; exit(1); }
+	  fclose(seskey_file);
+	  
+	  return sskey_buf;
+}
+
+//send message to the server using symmetric encription
+void send_message(int sock, string client_nonce, unsigned char * clear_buf, uint32_t clear_size) {
+
+  //IV creation
+  ostringstream iv_stream;
+  iv_stream << setw(12) << setfill('0') << client_nonce; //it concatenates 0 until 4 characters are reached
+  unsigned char * iv = (unsigned char * ) iv_stream.str().c_str();
+  unsigned char * cphr_buf = (unsigned char * ) malloc(clear_size);
+  unsigned char * tag_buf = (unsigned char * ) malloc(16);
+
+  unsigned char* session_key=get_session_key(sock);
+  gcm_encrypt(clear_buf, clear_size, iv, 12, session_key, iv, 12, cphr_buf, tag_buf);
+  //cout<<clear_size<<endl;
+
+  send(sock, tag_buf, 16, 0); //tag with fixed size
+  send(sock, (const char * ) & clear_size, sizeof(uint32_t), 0); //size of ciphertext
+  /*  cout<<"cipher length: "<<clear_size<<endl;
+	  cout<<"messaggio cifrato:"<<endl;
+      		BIO_dump_fp (stdout, (const char *)cphr_buf, clear_size);*/
+  send(sock, cphr_buf, clear_size, 0); //ciphertext
+
+}
+
+
+
 // SERVER SESSION KEY GENERATION
 
 static DH *get_dh2048_auto(void){
@@ -393,10 +561,11 @@ void serverSessionKeyGeneration(int &socket){
   //Perform again the derivation and store it in skey buffer
   if (EVP_PKEY_derive(der_ctx, skey, &skeylen) <= 0) handleErrorsDH();
 
-  //debug
+
+ /* //debug
   printf("Here it is the shared secret: \n");
   BIO_dump_fp (stdout, (const char *)skey, skeylen);
-
+*/
   //ATTENZIONEEEEEEEEEEEEEEEEEEEEEEEE
   /*WARNING! YOU SHOULD NOT USE THE DERIVED SECRET AS A SESSION KEY!
    * IS COMMON PRACTICE TO HASH THE DERIVED SHARED SECRET TO OBTAIN A SESSION KEY.
@@ -415,6 +584,19 @@ void serverSessionKeyGeneration(int &socket){
   EVP_DigestUpdate(Hctx, (unsigned char*)skey, skeylen);
   EVP_DigestFinal(Hctx, hashed_secret, &hashed_secret_len);
 
+  // export shared secret in a file
+  string seskey_file_name ="Client/SessionKeys/user"+to_string(id)+"_seskey.txt";
+  FILE * seskey_file = fopen(seskey_file_name.c_str(), "wt");
+  if (!seskey_file) {
+    cerr << "Error: cannot open file '" << seskey_file_name << "' (missing?)\n";
+    return;
+  }
+  int ret=fwrite(hashed_secret,1,hashed_secret_len,seskey_file);
+  fclose(seskey_file);
+  if (ret<hashed_secret_len) {
+    cerr << "Error: PEM_write_PUBKEY returned NULL\n";
+    return;
+  }
 
   //REMEMBER TO FREE CONTEXT!!!!!!
   EVP_MD_CTX_free(Hctx);
@@ -423,7 +605,77 @@ void serverSessionKeyGeneration(int &socket){
   EVP_PKEY_free(dh_prv_key);
   EVP_PKEY_CTX_free(DHctx);
   EVP_PKEY_free(dhparams);
+  
 
+
+}
+
+
+uint32_t * handleAuthentication(int sock,int id){
+ 
+  int valread;
+  uint32_t * client_nonce = (uint32_t * ) malloc(sizeof(uint32_t));
+  RAND_poll();
+  RAND_bytes((unsigned char * ) & client_nonce[0], sizeof(uint32_t));
+  cout << "client_nonce: " << * client_nonce << endl;
+  // generated nonce is sent to the server
+  send(sock, client_nonce, sizeof(uint32_t), 0);
+  uint32_t server_nonce;
+  //nonce generated by the server is received
+  if ((valread = read(sock, & server_nonce, sizeof(uint32_t))) == 0) {
+    cout << "server disconnected" << endl;
+    exit(1);
+  } else
+
+	cout<<"server nonce:"<<server_nonce<<endl;//debug
+	cout<<"client nonce:"<<*client_nonce<<endl;//debug
+  /*certificate from server must be validated through CA*/
+  //size of next message is received
+  unsigned int size;
+  if ((valread = read(sock, & size, sizeof(uint32_t))) == 0) {
+    cout << "client disconnected" << endl;
+    exit(1);
+  }
+  //certificate from server is received
+  unsigned char * server_cert = (unsigned char * ) malloc(size);
+  if ((valread = read(sock, server_cert, size)) == 0) {
+    cout << "server disconnected" << endl;
+    exit(1);
+  }
+
+  validate_server_certificate(server_cert);
+
+  /*digital signature from the server must be verified. */
+
+  //digital signature from server is received
+  unsigned char * server_sign = (unsigned char * ) malloc(256);
+  if ((valread = read(sock, server_sign, 256)) == 0) {
+    cout << "server disconnected" << endl;
+    exit(1);
+  }
+  //create the plaintext for signature verification
+  string s = "Hello"+toString(to_string(server_nonce));
+  unsigned char * clear_buf = (unsigned char * ) s.c_str();
+  unsigned int clear_size = strlen((const char * ) clear_buf);
+  verify_digital_signature(server_sign, clear_buf, clear_size);
+  cout << "Server authentication completed!" << endl;
+
+  //Digital signature must be sent to the server for authentication
+  authenticate_to_server(sock, toString(to_string( * client_nonce)),id);
+
+  //digital signature of end authentication from the server must be verified.
+  server_sign = (unsigned char * ) malloc(256);
+  if ((valread = read(sock, server_sign, 256)) == 0) {
+    cout << "server disconnected" << endl;
+    exit(1);
+  }
+  //create the plaintext for signature verification
+  s = "EndAuthentication" + toString(to_string(server_nonce));
+  clear_buf = (unsigned char * ) s.c_str();
+  clear_size = strlen((const char * ) clear_buf);
+  verify_digital_signature(server_sign, clear_buf, clear_size);
+  
+  return client_nonce;
 }
 
 vector<string> split(const string &s, char delim) {
@@ -444,22 +696,122 @@ void printConnectedUsers(){
   }
 }
 
-void updateConnectedUsers(){
-	unsigned char tmp[500];
+void updateConnectedUsers(unsigned char* clear_buf){
+/*	unsigned char tmp[500];
 	int valread;
 	//TODO needs to be decrypted
 	if ((valread = read( sock , tmp, MSG_WAITALL)) == 0){
 			 cout<<"server disconnected"<<endl;
 			 exit(1);
-	}
-	string s(reinterpret_cast<char*>(tmp));
+	}*/
+	string s(reinterpret_cast<char*>(clear_buf));
 	connectedUsers = split(s, ',');
 
 	aCurrentMenu->updateText(connectedUsers);
 	aCurrentMenu->printText();
 }
 
-void packetHandler(int signum){
+//Message from the server must be decrypted,verified and then analyzed
+bool handleServerMessage(unsigned char * cphr_buf, uint32_t cphr_len, unsigned char * tag_buf) {
+  int valread = 0;
+
+  ostringstream iv_stream;
+  iv_stream << setw(12) << setfill('0') << *client_nonce; //it concatenates 0 until 4 characters are reached
+  unsigned char * iv = (unsigned char * ) iv_stream.str().c_str();
+  unsigned char* session_key=get_session_key(sock);
+  unsigned char * clear_buf = (unsigned char * ) malloc(cphr_len);
+
+  valread = gcm_decrypt(cphr_buf, cphr_len, iv, 12, tag_buf, session_key, iv, 12, clear_buf);
+  if (valread == -1)
+    return false;
+  unsigned char * type = & clear_buf[0];
+
+  //type=2 --> challenge request message
+  //type=3 --> challenge response message
+  //type=5 --> update connected users list
+  if ( * type == '2') {
+    char * opponent_username = (char * ) malloc(cphr_len - 1);
+    strncpy(opponent_username, (const char * ) & clear_buf[1], cphr_len);
+    opponent_username[cphr_len - 1] = '\0';
+    cout << "User " << opponent_username << " sent you a challenge request. Do you want to play with him?[yes/no]";
+    string choice;
+    getline(cin, choice);
+    if (!cin) {
+      cerr << "Error during input\n";
+      exit(1);
+    }
+
+    //plaintext to encrypt
+    clear_buf[cphr_len] = (choice == "yes") ? '1' : '0';
+    clear_buf[0]='3';
+    uint32_t clear_size = cphr_len + 1;
+    (*client_nonce)++;  //we increase nonce
+    send_message(sock, toString(to_string(*client_nonce)), clear_buf, clear_size);
+    
+    cout<<"In attesa di ricevere pubkey e indirizzo ip dell'avversario.."<<endl;
+  }
+  if ( * type == '3') {
+    char * opponent_username = (char * ) malloc(cphr_len - 2);
+    strncpy(opponent_username, (const char * ) & clear_buf[1], cphr_len-2);
+    opponent_username[cphr_len - 3] = '\0';
+    char choice = clear_buf[cphr_len-2];
+    cout<<choice<<endl;
+        cout<<cphr_len<<endl;
+    if (choice == '1') {
+      cout << "User " << opponent_username << " accepted the challenge.";
+    } else
+      cout << "User " << opponent_username << " refused the challenge.";
+
+  }
+  if ( * type == '5') {
+     updateConnectedUsers(&clear_buf[1]);
+   }
+   
+   //TODO FREE CLEAR_BUF
+  return true;
+}
+
+void packetReceiver(int signum){
+	int valread;
+	//Digest of message is received
+    	unsigned char * tag_buf = (unsigned char * ) malloc(16);
+	if ((valread = read(sock, tag_buf, 16)) == 0) {
+	cout << "client disconnected" << endl;
+	      exit(1);
+	}
+	   /*      cout<<"dimensione tag: "<<valread<<endl;	//debug
+		 cout<<"Tag:"<<endl;
+		 BIO_dump_fp (stdout, (const char *)tag_buf, valread);
+*/
+	    //size of next message is received
+	    uint32_t cphr_len;
+	    if ((valread = read(sock, & cphr_len, sizeof(uint32_t))) == 0) {
+	      cout << "client disconnected" << endl;
+	      exit(1);
+	    }
+	/*       cout<<"dimensione di chpr_len: "<<valread<<endl;//debug
+	       cout<<"chpr_len: "<<cphr_len<<endl<<endl;
+*/
+	    //message from client is received
+	    unsigned char * cphr_buf = (unsigned char * ) malloc(cphr_len);
+	    if ((valread = read(sock, cphr_buf, cphr_len)) == 0) {
+	      cout << valread << endl;
+	      cout << "client disconnected" << endl;
+	      exit(1);
+	    }
+	/*       cout<<endl<<"dimensione del messaggio: "<<valread<<endl;	//debug
+	       cout<<"messaggio:"<<endl;
+	       BIO_dump_fp (stdout, (const char *)cphr_buf, valread);
+*/
+	    ( * client_nonce) ++; //nonce is incremented.
+	    //Decrpyt and analyze the message
+	    if (handleServerMessage(cphr_buf, cphr_len, tag_buf) == false) {
+	      cout << "Invalid Message received." << endl;
+	      //(*client_nonce)--;	//nonce is restored.
+	      exit(1);
+	    }
+
+/*
 	int valread;
 	uint8_t type;
 	if ((valread = read( sock , &type, sizeof(uint8_t))) == 0){
@@ -474,6 +826,7 @@ void packetHandler(int signum){
 			updateConnectedUsers();
 			break;
 	}
+	*/
 }
 
 int main(int argc, char const *argv[])
@@ -487,79 +840,18 @@ int main(int argc, char const *argv[])
 			 //exit(1);
 		 }
 
-		 int id = atoi(argv[1]);
-		 cout<<"id: "<<id<<endl;
+     id = atoi(argv[1]); 
+     cout<<"id: "<<id<<endl;
 
-    //*AUTHENTICATION WITH SERVER*//
-    // Allocate memory for and randomly generate NONCE:
-/*  uint32_t* client_nonce;
-  generateNonce(client_nonce);
-	  */
-    uint32_t* client_nonce = (uint32_t*)malloc(sizeof(uint32_t));
-    RAND_poll();
-    RAND_bytes((unsigned char*)&client_nonce[0],sizeof(uint32_t));
-    cout<<"client_nonce: "<<*client_nonce<<endl;
-    // generated nonce is sent to the server
-    send(sock , client_nonce , sizeof(uint32_t) , 0 );
-    uint32_t server_nonce;
-    //nonce generated by the server is received
-    if ((valread = read( sock , &server_nonce, sizeof(uint32_t))) == 0)
-       {
-  	cout<<"server disconnected"<<endl;
-  	exit(1);
-       }
-    else
-    	cout<<"server_nonce: "<<server_nonce<<endl;
+      //*AUTHENTICATION WITH SERVER*//
+      client_nonce=handleAuthentication(sock,id);
+      cout << "Authentication completed!" << endl;
 
-      /*certificate from server must be validated through CA*/
-    //size of next message is received
-  	unsigned int size;
-  	if ((valread = read( sock , &size, sizeof(uint32_t))) == 0)
-  	{
-  		cout<<"client disconnected"<<endl;
-  		exit(1);
-  	}
-    //certificate from server is received
-    unsigned char* server_cert= (unsigned char*)malloc(size);
-    if ((valread = read( sock , server_cert, size)) == 0)
-       {
-  	cout<<"server disconnected"<<endl;
-  	exit(1);
-       }
+	
+  /*SESSION KEY MUST BE ENSTABLISHED WITH SERVER*/
+  serverSessionKeyGeneration(sock);
+  cout<<"Session key has been enstablished!"<<endl;
 
-    validate_server_certificate(server_cert);
-
-    /*digital signature from the server must be verified. */
-    //digital signature from server is received
-    unsigned char* server_sign= (unsigned char*)malloc(256);
-    if ((valread = read( sock , server_sign, 256)) == 0)
-       {
-  	cout<<"server disconnected"<<endl;
-  	exit(1);
-       }
-  	//create the plaintext for signature verification
-   string s="Hello"+toString(to_string(server_nonce));
-   unsigned char* clear_buf=(unsigned char*)s.c_str();
-   unsigned int clear_size=strlen((const char*)clear_buf);
-   verify_digital_signature(server_sign,clear_buf,clear_size);
-   cout<<"Server authentication completed!"<<endl;
-
-   //Digital signature + pub key must be sent to the server for authentication
-   authenticate_to_server(sock,toString(to_string(*client_nonce)), id);
-
-   //digital signature of end authentication from the server must be verified.
-   server_sign= (unsigned char*)malloc(256);
-   if ((valread = read( sock , server_sign, 256)) == 0){
-        cout<<"server disconnected"<<endl;
-  	    exit(1);
-   }
-   //create the plaintext for signature verification
-   s = "EndAuthentication" + toString(to_string(server_nonce));
-   clear_buf = (unsigned char*)s.c_str();
-   clear_size=strlen((const char*)clear_buf);
-   verify_digital_signature(server_sign,clear_buf,clear_size);
-
-   cout<<"Authentication completed!"<<endl;
 
 	 //INTERRUPT DRIVEN CONNECTION
 
@@ -567,8 +859,7 @@ int main(int argc, char const *argv[])
 	 pid_t pgrp;
 
 	 on=1;
-	 signal(SIGIO, packetHandler);
-
+	 signal(SIGIO, packetReceiver);
 	 // Set the process receiving SIGIO/SIGURG signals to us
 
 	 pgrp=getpid();
@@ -586,19 +877,38 @@ int main(int argc, char const *argv[])
      bool isQuitOptionSelected = false;
      while (!isQuitOptionSelected) // We're saying that, as long as the quit option wasn't selected, we keep running
      {
-     aCurrentMenu->printText(); // This will call the method of whichever MenuObject we're using, and print the text we want to display
+	     aCurrentMenu->printText(); // This will call the method of whichever MenuObject we're using, and print the text we want to display
 
-     int choice = 0; // Always initialise variables, unless you're 100% sure you don't want to.
-     cin >> choice;
+		//*User inserts the id of the opponent.*//
+	     int choice = 0; // Always initialise variables, unless you're 100% sure you don't want to.
+	     cin >> choice;	//TODO fare in modo che input sia username completo
+	     
+	     if(choice > connectedUsers.size() || choice < 1){ //Invalid identifier
+		  cout<<"Select identifier from 1 to "<<connectedUsers.size()<<endl;
+		  break;
+	     }
+	     
+	     //plaintext to encrypt     //We suppose user2 sends a request to user1
+	    uint32_t clear_size = 6; //debug
+	    string s = "2user1"; //debug
+	    unsigned char * clear_buf=(unsigned char *)malloc(clear_size);
+	    clear_buf= (unsigned char *) s.c_str();
 
-     BaseInterface* aNewMenuPointer = aCurrentMenu->getNextMenu(choice, isQuitOptionSelected); // This will return a new object, of the type of the new menu we want. Also checks if quit was selected
+	    ( * client_nonce) ++; //nonce is incremented.
+	    send_message(sock, toString(to_string( * client_nonce)), clear_buf, clear_size);
+	    
+	    sleep(100); //DEBUG
 
-     if (aNewMenuPointer && aNewMenuPointer != aCurrentMenu) // This is why we set the pointer to 0 when we were creating the new menu - if it's 0, we didn't create a new menu, so we will stick with the old one
-     {
+		
+		
+	     BaseInterface* aNewMenuPointer = aCurrentMenu->getNextMenu(choice, isQuitOptionSelected); // This will return a new object, of the type of the new menu we want. Also checks if quit was selected
+
+	     if (aNewMenuPointer && aNewMenuPointer != aCurrentMenu) // This is why we set the pointer to 0 when we were creating the new menu - if it's 0, we didn't create a new menu, so we will stick with the old one
+	     {
 			 delete aCurrentMenu; // We're doing this to clean up the old menu, and not leak memory.
 			 aCurrentMenu = aNewMenuPointer; // We're updating the 'current menu' with the new menu we just created
 		 }
-}
+	}
 
 
 /*Grid g;
@@ -739,3 +1049,5 @@ cout<<strerror(errno)<<endl;
 
 return 0;
 }
+
+

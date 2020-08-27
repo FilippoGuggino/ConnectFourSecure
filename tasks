@@ -24,15 +24,15 @@ struct ChallengeRequest{
 
 Type
 1 = autenticazione
-2 = voglio sfidare <tizio>
-3 = <tizio> ti vuole sfidare
-4 = update with connected users packet
+2 = voglio sfidare <tizio>  (from server point of view)
+3 = rispondo alla richiesta di <tizio> (from client point of view)
+?=
+5 = update with connected users packet
 
 Esempio Filippo manda richiesta di sfida a Zaccaria
--Filippo crea nonce e lo invia al server
--Filippo invia <2, Zaccaria, nonce> al server
--Server invia il nonce (scelto da Filippo) a Zaccaria
--Server invia <3, Filippo, nonce> a Zaccaria
+-Filippo incrementa il nonce e invia <2, Zaccaria, nonce> al server
+-Server incrementa il nonce del client e invia  <2, Filippo, nonce> a Zaccaria
 -Zaccaria sceglie se accettare(1) o rifiutare(0)
--Zaccaria invia <3, Filippo, nonce, 1/0> al server
--Server invia <2, Zaccaria, nonce, 1/0> a Filippo
+-Zaccaria incrementa nonce invia <3, Filippo, nonce, 1/0> al server
+-Server incrementa nonce e invia <3, Zaccaria, nonce, 1/0> a Filippo
+-Filippo incrementa nonce e legge il messaggio.

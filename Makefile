@@ -1,3 +1,4 @@
+SHELL := /bin/bash # Use bash syntax
 cc=g++
 MAKE=make
 RM=rm
