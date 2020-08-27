@@ -747,21 +747,26 @@ bool handleServerMessage(unsigned char * cphr_buf, uint32_t cphr_len, unsigned c
     uint32_t clear_size = cphr_len + 1;
     (*client_nonce)++;  //we increase nonce
     send_message(sock, toString(to_string(*client_nonce)), clear_buf, clear_size);
-    
-    cout<<"In attesa di ricevere pubkey e indirizzo ip dell'avversario.."<<endl;
+    if(choice=="yes")
+    	cout<<"Waiting for public key and ip address of opponent.."<<endl;
+    else
+        cout<<"Challenge refused"<<endl;
+    return true;
   }
   if ( * type == '3') {
     char * opponent_username = (char * ) malloc(cphr_len - 2);
     strncpy(opponent_username, (const char * ) & clear_buf[1], cphr_len-2);
     opponent_username[cphr_len - 3] = '\0';
     char choice = clear_buf[cphr_len-2];
-    cout<<choice<<endl;
-        cout<<cphr_len<<endl;
-    if (choice == '1') {
-      cout << "User " << opponent_username << " accepted the challenge.";
-    } else
-      cout << "User " << opponent_username << " refused the challenge.";
 
+    if (choice == '1') {
+      cout << "User " << opponent_username << " accepted the challenge."<<endl;
+      cout<<"Waiting for public key and ip address of opponent.."<<endl;
+      //TODO get public key and ip from server
+      
+    } else
+      cout << "User " << opponent_username << " refused the challenge."<<endl;
+    return true;
   }
   if ( * type == '5') {
      updateConnectedUsers(&clear_buf[1]);
@@ -770,7 +775,7 @@ bool handleServerMessage(unsigned char * cphr_buf, uint32_t cphr_len, unsigned c
    //TODO FREE CLEAR_BUF
   return true;
 }
-
+//asyncronous reception of message 
 void packetReceiver(int signum){
 	int valread;
 	//Digest of message is received
@@ -811,22 +816,6 @@ void packetReceiver(int signum){
 	      exit(1);
 	    }
 
-/*
-	int valread;
-	uint8_t type;
-	if ((valread = read( sock , &type, sizeof(uint8_t))) == 0){
-			 cout<<"server disconnected"<<endl;
-			 exit(1);
-	}
-
-	//cout<<"tipo ricevuto "<<(uint32_t)type<<endl;
-	switch(type){
-		case 5:
-			//cout<<"aggiorno"<<endl;
-			updateConnectedUsers();
-			break;
-	}
-	*/
 }
 
 int main(int argc, char const *argv[])
@@ -880,27 +869,34 @@ int main(int argc, char const *argv[])
 	     aCurrentMenu->printText(); // This will call the method of whichever MenuObject we're using, and print the text we want to display
 
 		//*User inserts the id of the opponent.*//
-	     int choice = 0; // Always initialise variables, unless you're 100% sure you don't want to.
-	     cin >> choice;	//TODO fare in modo che input sia username completo
+	     string opponent_username; 
+	     cin >> opponent_username;	
 	     
-	     if(choice > connectedUsers.size() || choice < 1){ //Invalid identifier
-		  cout<<"Select identifier from 1 to "<<connectedUsers.size()<<endl;
-		  break;
+	     bool isConnected=false;
+             for(int i = 0; i < connectedUsers.size(); i++){
+             cout<<connectedUsers[i]<<endl;
+	     	if(opponent_username==connectedUsers[i])
+	     		isConnected=true;
+	     }
+	     if(!isConnected){
+	     	cout<<"Invalid input"<<endl;
+	     	continue;
 	     }
 	     
-	     //plaintext to encrypt     //We suppose user2 sends a request to user1
-	    uint32_t clear_size = 6; //debug
-	    string s = "2user1"; //debug
+	     //plaintext to encrypt     
+	    uint32_t clear_size = opponent_username.length()+1; 
 	    unsigned char * clear_buf=(unsigned char *)malloc(clear_size);
-	    clear_buf= (unsigned char *) s.c_str();
+	    clear_buf[0]='2';
+	    strcpy((char*)&clear_buf[1], opponent_username.c_str());
+
 
 	    ( * client_nonce) ++; //nonce is incremented.
 	    send_message(sock, toString(to_string( * client_nonce)), clear_buf, clear_size);
-	    
-	    sleep(100); //DEBUG
+	    cout<<"Waiting for "<<opponent_username<<" to accept the request..."<<endl<<endl;
 
-		
-		
+
+/*		
+            int choice=1; //DEBUG
 	     BaseInterface* aNewMenuPointer = aCurrentMenu->getNextMenu(choice, isQuitOptionSelected); // This will return a new object, of the type of the new menu we want. Also checks if quit was selected
 
 	     if (aNewMenuPointer && aNewMenuPointer != aCurrentMenu) // This is why we set the pointer to 0 when we were creating the new menu - if it's 0, we didn't create a new menu, so we will stick with the old one
@@ -908,6 +904,7 @@ int main(int argc, char const *argv[])
 			 delete aCurrentMenu; // We're doing this to clean up the old menu, and not leak memory.
 			 aCurrentMenu = aNewMenuPointer; // We're updating the 'current menu' with the new menu we just created
 		 }
+		 */
 	}
 
 

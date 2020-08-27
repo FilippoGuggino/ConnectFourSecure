@@ -55,12 +55,12 @@ void FirstMenu::updateText(vector<string> user_list){
 
 BaseInterface* FirstMenu::getNextMenu(int choice, bool& iIsQuitOptionSelected){
      BaseInterface *aNewMenu = 0; // We're setting up the pointer here, but makin sure it's null (0)
-/*
+
      if(choice > user_list.size() || choice < 1){
           cout<<"Select identifier from 1 to "<<user_list.size()<<endl;
           return this;
      }
-*/
+
      //use name instead of identifier because in the meantime a new user may have connected
      //forgeChallengeRequest(user_list.at(choice));
 

@@ -30,29 +30,18 @@ using namespace std;
 vector<struct UserInfo> connectedUsers;
 mutex connectedUsersMutex;
 
-//utility function that allows to get a fix-sized string from nonce
-string toString(string s){
+//utility function that allows to get a fix-sized string from nonce (10 bytes for nonce exchange and 12 for iv generation)
+string toString(uint32_t s,int i){
 
-  for(int i=strlen(s.c_str());i<10;i++){  //10 is the max number of digits of nonce
-    s='0'+s;
-  }
-  return s;
+	ostringstream fixed_nonce;
+	fixed_nonce << setw( i ) << setfill( '0' ) << to_string(s);
+
+  return fixed_nonce.str();
 }
-/*
-void generateNonce(unsigned int* nonce){
-// Allocate memory for a randomly generate NONCE:
-nonce= (unsigned int*)malloc(sizeof(uint32_t));
-// Seed OpenSSL PRNG
-RAND_poll();
-// Generate 4 bytes at random. That is my NONCE
-RAND_bytes((unsigned char*)&nonce[0],sizeof(uint32_t));
-}
-*/
 int handleErrors(){
 	printf("An error occourred.\n");
 	exit(1);
 }
-
 
 int indexOf(vector<struct UserInfo> vect, string s){
   for (int i = 0; i < vect.size(); i++){
@@ -204,11 +193,8 @@ unsigned char* get_session_key(string username){
 void send_message(int sock,string client_nonce,unsigned char* clear_buf,uint32_t clear_size,string username){
 	  int ret;
 
-	  ostringstream iv_stream;
-	  iv_stream << setw( 12 ) << setfill( '0' ) << client_nonce; //it concatenates 0 until 4 characters are reached
-	 // unsigned char* iv=(unsigned char*)iv_stream.str().c_str();
   	  unsigned char* iv=(unsigned char*)malloc(12);
-	  strncpy((char*)iv,iv_stream.str().c_str(),12);
+	  strncpy((char*)iv,client_nonce.c_str(),12);
 	  unsigned char* cphr_buf=(unsigned char*)malloc(clear_size);
 	  unsigned char* tag_buf=(unsigned char*)malloc(16);
   	  unsigned char* session_key=get_session_key(username);
@@ -253,7 +239,7 @@ bool addToConnectedUsers(int sd, string username,uint32_t nonce, struct sockaddr
 
 void printConnectedUsers(){
   lock_guard<mutex> guard(connectedUsersMutex);
-  cout<<"Utenti Connessi:"<<endl;
+  cout<<endl<<"Online users:"<<endl;
   for(int i = 0; i < connectedUsers.size(); i++){
     cout<<connectedUsers[i].username<<endl;
   }
@@ -288,16 +274,16 @@ unsigned char* forgeUpdatePacket(){
   clear_buf[k-1] = '\0';
 
   //now send the packet to all connected clients
-  cout<<endl<<"Invio della lista aggiornata degli utenti ai seguenti utenti:"<<endl; //debug
+  cout<<endl<<"Updated user list is sent to following users:"<<endl; //debug
   for(int i = 0; i < connectedUsers.size(); i++){
     (connectedUsers[i].nonce)++; //nonce is incremented
-    		cout<<"----"<<endl;
+    		cout<<"-----------------------"<<endl;
                 cout<<"client username:"<<connectedUsers[i].username<<endl;//debug
     		cout<<"client nonce:"<<connectedUsers[i].nonce<<endl;//debug
         	cout<<"client socket:"<<connectedUsers[i].socket<<endl;//debug
-        	cout<<"----"<<endl;
-    send_message(connectedUsers[i].socket, toString(to_string(connectedUsers[i].nonce)), clear_buf, clear_size,connectedUsers[i].username);
+    send_message(connectedUsers[i].socket, toString(connectedUsers[i].nonce,12), clear_buf, clear_size,connectedUsers[i].username);
   }
+  cout<<"-----------------------"<<endl;
 
   return clear_buf;
 }
@@ -483,14 +469,11 @@ bool verify_client_signature(string username,unsigned char* sgnt_buf,unsigned in
 
 
 //Message from the client must be decrypted,verified and then analyzed
-bool handleClientMessage(int sd,unsigned char* cphr_buf,uint32_t cphr_len,unsigned char* tag_buf,uint32_t client_nonce,string username){
+bool handleClientMessage(int sd,unsigned char* cphr_buf,uint32_t cphr_len,unsigned char* tag_buf,string client_nonce,string username){
   int valread = 0;
 
-  ostringstream iv_stream;
-  iv_stream << setw( 12 ) << setfill( '0' ) << client_nonce; //it concatenates 0 until 4 characters are reached
   unsigned char* iv=(unsigned char*)malloc(12);
-  strncpy((char*)iv,iv_stream.str().c_str(),12);
-
+  strncpy((char*)iv,client_nonce.c_str(),12);
   unsigned char* session_key=get_session_key(username);
   unsigned char* clear_buf=(unsigned char*)malloc(cphr_len);
   valread=gcm_decrypt(cphr_buf, cphr_len, iv, 12, tag_buf, session_key, iv, 12, clear_buf);
@@ -522,7 +505,7 @@ bool handleClientMessage(int sd,unsigned char* cphr_buf,uint32_t cphr_len,unsign
 	unsigned char*clear_buf=(unsigned char*)s.c_str();
 	uint32_t clear_size=s.size();
 	cout<<endl<<"Richiesta di sfida di "<<sender_username<<" da inoltrare a "<<opponent_username<<": "<<clear_buf<<endl;
- 	send_message(opponent_socket,toString(to_string(opponent_nonce)),clear_buf,clear_size,opponent_username);
+ 	send_message(opponent_socket,toString(opponent_nonce,12),clear_buf,clear_size,opponent_username);
  	
   }
   if(*type=='3'){
@@ -548,7 +531,7 @@ bool handleClientMessage(int sd,unsigned char* cphr_buf,uint32_t cphr_len,unsign
 	unsigned char*clear_buf=(unsigned char*)s.c_str();
 	uint32_t clear_size=s.size()+1;
 	cout<<endl<<"Risposta di sfida di "<<opponent_username<<" da inoltrare a "<<sender_username<<": "<<clear_buf<<endl;
- 	send_message(sender_socket,toString(to_string(sender_nonce)),clear_buf,clear_size,sender_username);	
+ 	send_message(sender_socket,toString(sender_nonce,12),clear_buf,clear_size,sender_username);	
   }
 
   return true;
@@ -575,7 +558,7 @@ bool handleClientMessage(int sd,unsigned char* cphr_buf,uint32_t cphr_len,unsign
 	cout<<"client nonce:"<<*client_nonce<<endl;//debug
     //Certificate + digital signature must be sent to the client for authentication
     sendCertificate(sd);
-    string s = "Hello"+toString(to_string(*server_nonce));
+    string s = "Hello"+toString(*server_nonce,10);
     unsigned char* clear_buf = (unsigned char*)s.c_str();
     int clear_size=strlen((const char*)clear_buf);
     send_digital_signature(sd, clear_buf, clear_size);
@@ -619,13 +602,13 @@ bool handleClientMessage(int sd,unsigned char* cphr_buf,uint32_t cphr_len,unsign
     string str( reinterpret_cast<char const*>(usernameTmp), valread ) ;
     username = str;
 
-    if(verify_client_signature(str,client_sign,client_sign_size,toString(to_string(*client_nonce)))==false)
+    if(verify_client_signature(str,client_sign,client_sign_size,toString(*client_nonce,10))==false)
     	return false;
     cout<<"Client authentication completed!"<<endl;
 
     // create the plaintext to be signed
 
-    s="EndAuthentication"+toString(to_string(*server_nonce));
+    s="EndAuthentication"+toString(*server_nonce,10);
     cout<<"plaintext da segnare:"<<s<<endl;
     clear_buf=(unsigned char*)s.c_str();
     clear_size=strlen((const char*)clear_buf);
@@ -712,10 +695,6 @@ printf("DH: param phase \n"); //debug
   //Perform again the derivation and store it in skey buffer
   if (EVP_PKEY_derive(der_ctx, skey, &skeylen) <= 0) handleErrorsDH();
 
-  //debug
-  printf("Here it is the shared secret: \n");
-  BIO_dump_fp (stdout, (const char *)skey, skeylen);
-
   unsigned char* hashed_secret;
   unsigned int hashed_secret_len;
   EVP_MD_CTX *Hctx;
@@ -756,7 +735,6 @@ printf("DH: param phase \n"); //debug
     string username;
     int valread;
     uint32_t client_nonce;
-    
   
     if(handleAuthentication(sd,username,&client_nonce) == false){
       cout<<"Authentication Error, abort connection"<<endl;
@@ -786,6 +764,7 @@ printf("DH: param phase \n"); //debug
     if ((valread = read( sd , tag_buf, 16)) == 0)
        {
   	cout<<"client disconnected"<<endl;
+  	removeFromConnectedUsers(username);
   	exit(1);
        }
 
@@ -794,6 +773,7 @@ printf("DH: param phase \n"); //debug
     if ((valread = read( sd , &cphr_len, sizeof(uint32_t))) == 0)
        {
   	cout<<"client disconnected"<<endl;
+  	removeFromConnectedUsers(username);
   	exit(1);
        }
  
@@ -801,8 +781,8 @@ printf("DH: param phase \n"); //debug
     unsigned char* cphr_buf=(unsigned char*)malloc(cphr_len);
     if ((valread = read( sd , cphr_buf, cphr_len)) == 0)
        {
-                           cout<<valread<<endl;
   	cout<<"client disconnected"<<endl;
+  	removeFromConnectedUsers(username);
   	exit(1);
        }
 
@@ -812,27 +792,15 @@ printf("DH: param phase \n"); //debug
     		break;
     	}
     }
-    cout<<endl<<client_nonce<<endl<<endl;	//nonce is incremented.
     //Decrpyt and analyze the message
-    if(handleClientMessage(sd,cphr_buf,cphr_len,tag_buf,client_nonce,username)==false){
+    if(handleClientMessage(sd,cphr_buf,cphr_len,tag_buf,toString(client_nonce,12),username)==false){
 	 cout<<"Invalid Message received."<<endl;
 	// client_nonce--;	//nonce is restored.
 	 exit(1);
 	 }
   }	    
     
-/*
-
-    uint32_t buff;
-    if ((valread = read( sd , &buff, sizeof(uint32_t))) == 0)
-    {
-      cout<<"client disconnected"<<endl;
-      removeFromConnectedUsers(username);
-      return;
-    }
-    cout<<strerror(errno)<<endl;
-    cout<<"Ho finito!"<<valread<<endl;*/
-  }
+}
 
   int main(int argc, char const *argv[])
   {
