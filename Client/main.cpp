@@ -307,10 +307,10 @@ int gcm_decrypt(unsigned char * ciphertext, int ciphertext_len,
   /*
   cout<<"iv:"<<endl;	//debug
 		 BIO_dump_fp (stdout, (const char *)iv, 12);
- 
+
   cout<<"chiave usata:"<<endl;	//debug
 		 BIO_dump_fp (stdout, (const char *)key, 128);
-   
+
   cout<<"messaggio cifrato:"<<endl;	//debug
 		 BIO_dump_fp (stdout, (const char *)ciphertext, ciphertext_len);
    cout<<"messaggio decifrato:"<<endl;	//debug
@@ -360,10 +360,10 @@ int gcm_encrypt(unsigned char * plaintext, int plaintext_len,
     /*
       cout<<"iv:"<<endl;	//debug
 		 BIO_dump_fp (stdout, (const char *)iv, 12);
- 
+
   cout<<"chiave usata:"<<endl;	//debug
 		 BIO_dump_fp (stdout, (const char *)key, 128);
-   
+
   cout<<"messaggio cifrato:"<<endl;	//debug
 		 BIO_dump_fp (stdout, (const char *)ciphertext, ciphertext_len);
    cout<<"messaggio decifrato:"<<endl;	//debug
@@ -373,7 +373,6 @@ int gcm_encrypt(unsigned char * plaintext, int plaintext_len,
   EVP_CIPHER_CTX_free(ctx);
   return ciphertext_len;
 }
-
 
 unsigned char* get_session_key(int sock){
 	int ret;
@@ -385,7 +384,7 @@ unsigned char* get_session_key(int sock){
 	    cerr << "Error: cannot open file '" << seskey_file_name << "' (missing?)\n";
 	    exit(1);
 	  }
-	  
+
 	  // get the ss size:
 	  // (assuming no failures in fseek() and ftell())
 	  //TODO we can't assume any failure
@@ -398,7 +397,7 @@ unsigned char* get_session_key(int sock){
 	  ret=fread(sskey_buf, 1, sskey_size, seskey_file);
 	  if(ret < sskey_size) { cerr << "Error while reading file '" << seskey_file_name << "'\n"; exit(1); }
 	  fclose(seskey_file);
-	  
+
 	  return sskey_buf;
 }
 
@@ -424,8 +423,6 @@ void send_message(int sock, string client_nonce, unsigned char * clear_buf, uint
   send(sock, cphr_buf, clear_size, 0); //ciphertext
 
 }
-
-
 
 // SERVER SESSION KEY GENERATION
 
@@ -605,14 +602,13 @@ void serverSessionKeyGeneration(int &socket){
   EVP_PKEY_free(dh_prv_key);
   EVP_PKEY_CTX_free(DHctx);
   EVP_PKEY_free(dhparams);
-  
+
 
 
 }
 
-
 uint32_t * handleAuthentication(int sock,int id){
- 
+
   int valread;
   uint32_t * client_nonce = (uint32_t * ) malloc(sizeof(uint32_t));
   RAND_poll();
@@ -674,7 +670,7 @@ uint32_t * handleAuthentication(int sock,int id){
   clear_buf = (unsigned char * ) s.c_str();
   clear_size = strlen((const char * ) clear_buf);
   verify_digital_signature(server_sign, clear_buf, clear_size);
-  
+
   return client_nonce;
 }
 
@@ -763,7 +759,7 @@ bool handleServerMessage(unsigned char * cphr_buf, uint32_t cphr_len, unsigned c
       cout << "User " << opponent_username << " accepted the challenge."<<endl;
       cout<<"Waiting for public key and ip address of opponent.."<<endl;
       //TODO get public key and ip from server
-      
+
     } else
       cout << "User " << opponent_username << " refused the challenge."<<endl;
     return true;
@@ -771,15 +767,17 @@ bool handleServerMessage(unsigned char * cphr_buf, uint32_t cphr_len, unsigned c
   if ( * type == '5') {
      updateConnectedUsers(&clear_buf[1]);
    }
-   
+
    //TODO FREE CLEAR_BUF
   return true;
 }
-//asyncronous reception of message 
-void packetReceiver(int signum){
+//asyncronous reception of message
+void packetHandler(int signum){
 	int valread;
+
 	//Digest of message is received
-    	unsigned char * tag_buf = (unsigned char * ) malloc(16);
+  unsigned char * tag_buf = (unsigned char * ) malloc(16);
+
 	if ((valread = read(sock, tag_buf, 16)) == 0) {
 	cout << "client disconnected" << endl;
 	      exit(1);
@@ -829,14 +827,14 @@ int main(int argc, char const *argv[])
 			 //exit(1);
 		 }
 
-     id = atoi(argv[1]); 
+     id = atoi(argv[1]);
      cout<<"id: "<<id<<endl;
 
       //*AUTHENTICATION WITH SERVER*//
       client_nonce=handleAuthentication(sock,id);
       cout << "Authentication completed!" << endl;
 
-	
+
   /*SESSION KEY MUST BE ENSTABLISHED WITH SERVER*/
   serverSessionKeyGeneration(sock);
   cout<<"Session key has been enstablished!"<<endl;
@@ -848,7 +846,7 @@ int main(int argc, char const *argv[])
 	 pid_t pgrp;
 
 	 on=1;
-	 signal(SIGIO, packetReceiver);
+	 signal(SIGIO, packetHandler);
 	 // Set the process receiving SIGIO/SIGURG signals to us
 
 	 pgrp=getpid();
@@ -869,34 +867,10 @@ int main(int argc, char const *argv[])
 	     aCurrentMenu->printText(); // This will call the method of whichever MenuObject we're using, and print the text we want to display
 
 		//*User inserts the id of the opponent.*//
-	     string opponent_username; 
-	     cin >> opponent_username;	
-	     
-	     bool isConnected=false;
-             for(int i = 0; i < connectedUsers.size(); i++){
-             cout<<connectedUsers[i]<<endl;
-	     	if(opponent_username==connectedUsers[i])
-	     		isConnected=true;
-	     }
-	     if(!isConnected){
-	     	cout<<"Invalid input"<<endl;
-	     	continue;
-	     }
-	     
-	     //plaintext to encrypt     
-	    uint32_t clear_size = opponent_username.length()+1; 
-	    unsigned char * clear_buf=(unsigned char *)malloc(clear_size);
-	    clear_buf[0]='2';
-	    strcpy((char*)&clear_buf[1], opponent_username.c_str());
+	     string choice;
+	     cin >> choice;
 
 
-	    ( * client_nonce) ++; //nonce is incremented.
-	    send_message(sock, toString(to_string( * client_nonce)), clear_buf, clear_size);
-	    cout<<"Waiting for "<<opponent_username<<" to accept the request..."<<endl<<endl;
-
-
-/*		
-            int choice=1; //DEBUG
 	     BaseInterface* aNewMenuPointer = aCurrentMenu->getNextMenu(choice, isQuitOptionSelected); // This will return a new object, of the type of the new menu we want. Also checks if quit was selected
 
 	     if (aNewMenuPointer && aNewMenuPointer != aCurrentMenu) // This is why we set the pointer to 0 when we were creating the new menu - if it's 0, we didn't create a new menu, so we will stick with the old one
@@ -904,7 +878,7 @@ int main(int argc, char const *argv[])
 			 delete aCurrentMenu; // We're doing this to clean up the old menu, and not leak memory.
 			 aCurrentMenu = aNewMenuPointer; // We're updating the 'current menu' with the new menu we just created
 		 }
-		 */
+
 	}
 
 
@@ -1046,5 +1020,3 @@ cout<<strerror(errno)<<endl;
 
 return 0;
 }
-
-
