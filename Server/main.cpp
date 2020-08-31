@@ -447,23 +447,13 @@ bool verify_client_signature(string username,unsigned char* sgnt_buf,unsigned in
     FILE* cert_file = fopen(cert_file_name.c_str(), "r");
     if(!cert_file){ cerr << "Error: cannot open file '" << cert_file_name << "' (missing?)\n"; return; }
 
-    // get the certificate size:
-    // (assuming no failures in fseek() and ftell())
-    //TODO we can't assume any failure
-    fseek(cert_file, 0, SEEK_END);
-    long int cert_size = ftell(cert_file);
-    fseek(cert_file, 0, SEEK_SET);
-
-    //read the certificate
-    unsigned char* cert_buf = (unsigned char*)malloc(cert_size);
-    ret=fread(cert_buf, 1, cert_size, cert_file);
-    if(ret < cert_size) { cerr << "Error while reading file '" << cert_file_name << "'\n"; exit(1); }
+    X509 *cert=PEM_read_X509(cert_file, NULL, NULL, NULL);
     fclose(cert_file);
     
     BIO* mbio=BIO_new(BIO_s_mem()); //serializing the certificate
-    PEM_write_bio_PUBKEY(mbio,dh_prv_key);
-    char* pubkey_buf = NULL;
-    long pubkey_size = BIO_get_mem_data(mbio,&pubkey_buf);
+    PEM_write_bio_X509(mbio,cert);
+    char* cert_buf = NULL;
+    long cert_size = BIO_get_mem_data(mbio,&cert_buf);
   
 
     send(sock , (const char*)&cert_size , sizeof(uint32_t) , 0 );  //certificate size
