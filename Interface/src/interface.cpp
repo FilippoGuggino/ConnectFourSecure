@@ -83,7 +83,7 @@ BaseInterface* FirstMenu::getNextMenu(string opponent_username, bool& iIsQuitOpt
 
 
   ( * client_nonce) ++; //nonce is incremented.
-  send_message(sock, toString(to_string( * client_nonce)), clear_buf, clear_size);
+  send_message(sock, toString(* client_nonce,12), clear_buf, clear_size);
   cout<<"Waiting for "<<opponent_username<<" to accept the request..."<<endl<<endl;
 
 

@@ -14,7 +14,7 @@ extern vector<string> connectedUsers;
 extern uint32_t * client_nonce;
 extern int sock;
 
-extern string toString(string s);
+extern string toString(uint32_t s,int i);
 extern void send_message(int sock, string client_nonce, unsigned char * clear_buf, uint32_t clear_size);
 
 class BaseInterface{
