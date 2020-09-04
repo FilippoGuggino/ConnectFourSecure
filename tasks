@@ -49,12 +49,18 @@ Autenticazione client-client (C1 manda la richiesta di sfida e C2 la accetta)
 -C2 verifica la firma e invia a C1 la firma digitale di C2_username|session_nonce
 -C1 verifica la firma e invia a C2 la firma digitale di "EndAuthentication"||session_nonce
 
+protocollo disconnessione
+-Client invia al server il messaggio "disconnectionRequest"
+-Server invia al Client il messaggio "disconnectionRequestACK"
+-Client si disconnette correttamente
 Type
 1 = autenticazione
 2 = voglio sfidare <tizio>  (from server point of view)
 3 = rispondo alla richiesta di <tizio> (from client point of view)
 4 = il messaggio contiene chiave pubblica e indirizzo ip dell'avversario.
 5 = update with connected users packet
+6 = session message with opponent
+7 = disconnection request
 
 Esempio Filippo manda richiesta di sfida a Zaccaria
 -Filippo incrementa il nonce e invia <2, Zaccaria, nonce> al server

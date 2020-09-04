@@ -12,10 +12,15 @@ enum cell {empty, red, blue};
 
 extern vector<string> connectedUsers;
 extern uint32_t * client_nonce;
+extern uint32_t * session_nonce;
 extern int sock;
-
+extern int opponent_sock;
+extern char* opponent_username;
+extern bool myturn;
+extern bool isMatchFinished;
+extern cell color;
 extern string toString(uint32_t s,int i);
-extern void send_message(int sock, string client_nonce, unsigned char * clear_buf, uint32_t clear_size);
+extern void send_message(int sock, string client_nonce, unsigned char * clear_buf, uint32_t clear_size,string username);
 
 class BaseInterface{
      protected:
@@ -51,7 +56,7 @@ class GameInterface : public BaseInterface{
           BaseInterface *getNextMenu(string colStr, bool& iIsQuitOptionSelected);
           void updateGrid();
           bool setCell(int col, cell color);
-          bool checkWinCondition(int row, int col);
+          bool checkWinCondition(int row, int col,cell color);
           void updateText(vector<string> user_list);
 };
 

@@ -20,6 +20,8 @@
 #include <openssl/x509.h>
 #include <fcntl.h> //for asynchronous socket
 #include <sstream>
+#include <ios>
+#include <limits>
 #include <signal.h>
 #include "interface.h"
 
@@ -29,15 +31,23 @@
 
 using namespace std;
 
+
 int sock; //for client-server communication
 int opponent_sock; //for client-client communication
 vector<string> connectedUsers;
 int id;
 uint32_t * client_nonce;
 uint32_t *session_nonce;
-string username;
+string myUsername;
 char* opponent_username;
+int opponent_username_length; //debug
+bool myturn=true;
+bool isMatchFinished=false;
+int nextAction; //0--> default  1--> handle challenge request  2-->end match
+cell color=red;
 BaseInterface* aCurrentMenu = new FirstMenu(connectedUsers);
+bool handleSessionMessage(unsigned char * cphr_buf, uint32_t cphr_len, unsigned char * tag_buf,string nonce,string username);
+
 
 //utility function that allows to get a fix-sized string from nonce (10 bytes for nonce exchange and 12 for iv generation)
 string toString(uint32_t s,int i){
@@ -235,18 +245,18 @@ int gcm_decrypt(unsigned char * ciphertext, int ciphertext_len,
 
   /* Clean up */
   EVP_CIPHER_CTX_cleanup(ctx);
-  /*
+/*
   cout<<"iv:"<<endl;	//debug
 		 BIO_dump_fp (stdout, (const char *)iv, 12);
  
   cout<<"chiave usata:"<<endl;	//debug
-		 BIO_dump_fp (stdout, (const char *)key, 128);
+		 BIO_dump_fp (stdout, (const char *)key, 32);
    
   cout<<"messaggio cifrato:"<<endl;	//debug
 		 BIO_dump_fp (stdout, (const char *)ciphertext, ciphertext_len);
    cout<<"messaggio decifrato:"<<endl;	//debug
 		 BIO_dump_fp (stdout, (const char *)plaintext, plaintext_len);
-	 */
+	*/
   if (ret > 0) {
     /* Success */
     plaintext_len += len;
@@ -293,7 +303,7 @@ int gcm_encrypt(unsigned char * plaintext, int plaintext_len,
 		 BIO_dump_fp (stdout, (const char *)iv, 12);
  
   cout<<"chiave usata:"<<endl;	//debug
-		 BIO_dump_fp (stdout, (const char *)key, 128);
+		 BIO_dump_fp (stdout, (const char *)key, 32);
    
   cout<<"messaggio cifrato:"<<endl;	//debug
 		 BIO_dump_fp (stdout, (const char *)ciphertext, ciphertext_len);
@@ -310,7 +320,7 @@ unsigned char* get_session_key(int sock,string peer_username){
 	int ret;
 
 	// retrieve shared secret from file
-	  string seskey_file_name ="Client/SessionKeys/"+username+"_"+peer_username+"_seskey.txt";
+	  string seskey_file_name ="Client/SessionKeys/"+myUsername+"_"+peer_username+"_seskey.txt";
 	  FILE * seskey_file = fopen(seskey_file_name.c_str(), "r");
 	  if (!seskey_file) {
 	    cerr << "Error: cannot open file '" << seskey_file_name << "' (missing?)\n";
@@ -333,8 +343,8 @@ unsigned char* get_session_key(int sock,string peer_username){
 	  return sskey_buf;
 }
 
-//send message to the server using symmetric encription
-void send_message(int sock, string client_nonce, unsigned char * clear_buf, uint32_t clear_size) {
+//send message to the server/opponent using symmetric encription
+void send_message(int sock, string client_nonce, unsigned char * clear_buf, uint32_t clear_size,string peer_username) {
 
   //IV creation
   unsigned char* iv=(unsigned char*)malloc(12);
@@ -344,11 +354,9 @@ void send_message(int sock, string client_nonce, unsigned char * clear_buf, uint
   unsigned char * cphr_buf = (unsigned char * ) malloc(clear_size);
   unsigned char * tag_buf = (unsigned char * ) malloc(16);
   unsigned char* session_key=(unsigned char * ) malloc(32); //aes key size...
-  string s="server";
-  session_key=get_session_key(sock,s);  //debug
+  session_key=get_session_key(sock,peer_username);  //debug
  		 
   gcm_encrypt(clear_buf, clear_size, iv, 12, session_key, iv, 12, cphr_buf, tag_buf);
-  //cout<<clear_size<<endl;
 
   send(sock, tag_buf, 16, 0); //tag with fixed size
   send(sock, (const char * ) & clear_size, sizeof(uint32_t), 0); //size of ciphertext
@@ -517,7 +525,7 @@ void generateSessionKey(int &socket,string peer_username){
   EVP_DigestFinal(Hctx, hashed_secret, &hashed_secret_len);
 
   // export shared secret in a file
-  string seskey_file_name ="Client/SessionKeys/"+username+"_"+peer_username+"_seskey.txt";  //debug
+  string seskey_file_name ="Client/SessionKeys/"+myUsername+"_"+peer_username+"_seskey.txt";  //debug
 
   FILE * seskey_file = fopen(seskey_file_name.c_str(), "wt");
   if (!seskey_file) {
@@ -545,7 +553,7 @@ void sendDigitalSignature(int socket,unsigned char* clear_buf,unsigned int clear
 	int ret;
 	
 	// load my private key:
-   string prvkey_file_name="Client/PrvKeys/"+username+"_prvkey.pem";
+   string prvkey_file_name="Client/PrvKeys/"+myUsername+"_prvkey.pem";
    FILE* prvkey_file = fopen(prvkey_file_name.c_str(), "r");
    if(!prvkey_file){ cerr << "Error: cannot open file '" << prvkey_file_name << "' (missing?)\n"; exit(1); }
    EVP_PKEY* prvkey = PEM_read_PrivateKey(prvkey_file, NULL, NULL, NULL);
@@ -636,20 +644,21 @@ uint32_t * handleServerAuthentication(int sock,int id){
 
   //digit the username to be sent to the server
    cout << "Please, type your username: ";
-   cin>>username;
+   cin>>myUsername;
+
    if(!cin) { cerr << "Error during input\n"; exit(1); }
 
    // create the plaintext to be signed
-   s=username+toString( * client_nonce,10);
+   s=myUsername+toString( * client_nonce,10);
    cout<<"plaintext da segnare:"<<s<<endl;
    clear_buf=(unsigned char*)s.c_str();
    clear_size=strlen((const char*)clear_buf);
 
   //Digital signature must be sent to the server for authentication
   sendDigitalSignature(sock, clear_buf,clear_size);
-  unsigned int user_size=username.size();
+  unsigned int user_size=myUsername.size();
   send(sock , (const char*)&user_size, sizeof(uint32_t) , 0 );	//username size
-  send(sock , username.c_str() , strlen(username.c_str()) , 0 );	//username in clear
+  send(sock , myUsername.c_str() , strlen(myUsername.c_str()) , 0 );	//username in clear
 
 
   /*digital signature of handshake termination message from the server must be verified. */
@@ -672,7 +681,7 @@ vector<string> split(const string &s, char delim) {
   string item;
   vector<string> elems;
   while (getline(ss, item, delim)) {
-		if(item.compare(username) != 0)
+		if(item.compare(myUsername) != 0)
     	elems.push_back(item);
   }
   return elems;
@@ -697,17 +706,168 @@ void updateConnectedUsers(unsigned char* clear_buf){
 	connectedUsers = split(s, ',');
 
 	aCurrentMenu->updateText(connectedUsers);
-	aCurrentMenu->printText();
+	aCurrentMenu->printText(); 
 }
 
+void updateMenu(string choice,bool isQuitOptionSelected){
+	BaseInterface* aNewMenuPointer = aCurrentMenu->getNextMenu(choice, isQuitOptionSelected); // This will return a new object, of the type of the new menu we want. Also checks if quit was selected
+  	
+	if (aNewMenuPointer && aNewMenuPointer != aCurrentMenu) // This is why we set the pointer to 0 when we were creating the new menu - if it's 0, we didn't create a new menu, so we will stick with the old one
+	{
+		delete aCurrentMenu; // We're doing this to clean up the old menu, and not leak memory.
+		aCurrentMenu = aNewMenuPointer; // We're updating the 'current menu' with the new menu we just created
+	}
+	aCurrentMenu->printText();  
+	if(isMatchFinished){ //if match is finished we go back to first menu
+	  	  cout<<"Do you want to continue playing?[yes/no]"<<endl;
+	  	  nextAction=2;
+  	}   
+}
+//Handle session message from opponent
+void handleOpponentMessage(){
 
-//Message from the server must be decrypted,verified and then analyzed
-bool handleServerMessage(unsigned char * cphr_buf, uint32_t cphr_len, unsigned char * tag_buf,string nonce) {
+
+	int valread;
+	//Digest of message is received
+    	unsigned char * tag_buf = (unsigned char * ) malloc(16);
+	if ((valread = read(opponent_sock, tag_buf, 16)) == 0) {
+	      cout << "client disconnected" << endl;
+	      exit(1);
+	}
+	 
+	//size of next message is received
+	uint32_t cphr_len;
+	    if ((valread = read(opponent_sock, & cphr_len, sizeof(uint32_t))) == 0) {
+	      cout << "client disconnected" << endl;
+	      exit(1);
+	    }
+	
+	    //message from client is received
+	    unsigned char * cphr_buf = (unsigned char * ) malloc(cphr_len);
+	    if ((valread = read(opponent_sock, cphr_buf, cphr_len)) == 0) {
+	      cout << valread << endl;
+	      cout << "client disconnected" << endl;
+	      exit(1);
+	    }
+	    ( * session_nonce) ++; //nonce is incremented.
+	    //Decrpyt and analyze the message
+	    if (handleSessionMessage(cphr_buf, cphr_len, tag_buf,toString(*session_nonce,12),opponent_username) == false) {  
+	      cout << "Invalid Message received." << endl;
+	      //(*client_nonce)--;	//nonce is restored.
+	      exit(1);
+	    }
+ 
+}
+
+void handleChallengeResponse(unsigned char * clear_buf, uint32_t clear_len){
+    	opponent_username = (char * ) malloc(clear_len - 2);
+    	strncpy(opponent_username, (const char * ) & clear_buf[1], clear_len-1);
+	opponent_username[clear_len - 2] = '\0';
+	char choice = clear_buf[clear_len-1];
+	if (choice == '1') {
+	    
+	   cout << "User " << opponent_username << " accepted the challenge."<<endl;
+	   cout<<"Waiting for public key and ip address of opponent.."<<endl;
+	     
+	} else
+	     cout << "User " << opponent_username << " refused the challenge...Select another user:"<<endl;
+}
+
+void handleChallengeRequest(unsigned char * clear_buf, uint32_t clear_len){
+    opponent_username = (char * ) malloc(clear_len - 1);
+    opponent_username_length=clear_len-1;
+    strncpy(opponent_username, (const char * ) & clear_buf[1], clear_len);
+    opponent_username[clear_len - 1] = '\0';
+    cout << "User " << opponent_username << " sent you a challenge request. Do you want to play with him?[yes/no]"<<endl;
+    nextAction=1;
+   /* 
+    string choice;
+    cin>>choice;
+
+    if (!cin) {
+      cerr << "Error during input\n";
+      exit(1);
+    }
+
+    //plaintext to encrypt
+    clear_buf[clear_len] = (choice == "yes") ? '1' : '0';
+    clear_buf[0]='3';
+    clear_len = clear_len + 1;
+    (*client_nonce)++;  //we increase nonce
+    send_message(sock, toString(*client_nonce,12), clear_buf, clear_len,"server");
+    if(choice=="yes")
+    	cout<<"Waiting for public key and ip address of opponent.."<<endl;
+    else
+        cout<<"Challenge refused"<<endl;*/
+}
+
+//listen for a connection with the opponent
+void listenForClientConnection(struct sockaddr_in addr){
+	        int master_socket;
+		if( (master_socket = socket(AF_INET , SOCK_STREAM , 0)) == 0)
+		{
+		  	perror("socket failed");
+		  	exit(EXIT_FAILURE);
+		}
+		addr.sin_addr.s_addr = INADDR_ANY;
+		//bind the socket to localhost port 3070
+	    	if (bind(master_socket, (struct sockaddr *)&addr, sizeof(addr))<0)
+	    	{
+	      		perror("bind failed");
+			exit(EXIT_FAILURE);
+	    	}
+	    	printf("Listener on port %d \n", CLIENT_PORT);
+	    	
+	    	//try to specify maximum of 3 pending connections for the master socket
+		if (listen(master_socket, 3) < 0)
+	 	{
+		      perror("listen");
+		      exit(EXIT_FAILURE);
+		}
+	    	//accept new connection
+	    	struct sockaddr_in opponent_addr;	
+	    	int addrlen = sizeof(opponent_addr);
+	    	if ((opponent_sock = accept(master_socket, (struct sockaddr *)&opponent_addr, (socklen_t*)&addrlen))<0){
+			perror("accept");
+			cin.get();
+			exit(EXIT_FAILURE);
+	        }
+		//inform user of socket number - used in send and receive commands
+		      printf("New connection , socket fd is %d , ip is : %s , port : %d\n" ,
+		      opponent_sock ,
+		      inet_ntoa(opponent_addr.sin_addr) ,
+		      ntohs(opponent_addr.sin_port));
+		
+}
+
+void checkACKServer(unsigned char * clear_buf, uint32_t cphr_len){
+    
+    string server_msg((const char*)&clear_buf[1],cphr_len-1);
+    if (server_msg=="disconnectionRequestACK"){
+	  close(sock);
+    }
+    else {
+      cout<<"Invalid disconnection ACK received";
+      exit(1);
+    }
+}
+		
+void sendDisconnectionRequest(){
+  string msg="disconnectionRequest";
+  uint32_t clear_size = msg.length()+1;
+ 	unsigned char * clear_buf=(unsigned char *)malloc(clear_size);
+ 	clear_buf[0]='7';
+ 	strcpy((char*)&clear_buf[1], msg.c_str());
+        (*client_nonce)++;
+	send_message(sock, toString((* client_nonce),12), clear_buf, clear_size,"server");
+}
+
+bool handleSessionMessage(unsigned char * cphr_buf, uint32_t cphr_len, unsigned char * tag_buf,string nonce,string peer_username) {
   int valread = 0;
   
   unsigned char* iv=(unsigned char*)malloc(12);
   strncpy((char*)iv,nonce.c_str(),12);
-  unsigned char* session_key=get_session_key(sock,"server");
+  unsigned char* session_key=get_session_key(sock,peer_username);
   unsigned char * clear_buf = (unsigned char * ) malloc(cphr_len);
 
   valread = gcm_decrypt(cphr_buf, cphr_len, iv, 12, tag_buf, session_key, iv, 12, clear_buf);
@@ -719,43 +879,13 @@ bool handleServerMessage(unsigned char * cphr_buf, uint32_t cphr_len, unsigned c
   //type=3 --> challenge response message
   //type=4 --> opponent's ip address and public key
   //type=5 --> update connected users list
+  //type=6 --> match move
   if ( * type == '2') {
-    opponent_username = (char * ) malloc(cphr_len - 1);
-    strncpy(opponent_username, (const char * ) & clear_buf[1], cphr_len);
-    opponent_username[cphr_len - 1] = '\0';
-    cout << "User " << opponent_username << " sent you a challenge request. Do you want to play with him?[yes/no]";
-    string choice;
-    getline(cin, choice);
-    if (!cin) {
-      cerr << "Error during input\n";
-      exit(1);
-    }
-
-    //plaintext to encrypt
-    clear_buf[cphr_len] = (choice == "yes") ? '1' : '0';
-    clear_buf[0]='3';
-    uint32_t clear_size = cphr_len + 1;
-    (*client_nonce)++;  //we increase nonce
-    send_message(sock, toString(*client_nonce,12), clear_buf, clear_size);
-    if(choice=="yes")
-    	cout<<"Waiting for public key and ip address of opponent.."<<endl;
-    else
-        cout<<"Challenge refused"<<endl;
+    handleChallengeRequest(clear_buf,cphr_len);
     return true;
   }
   if ( * type == '3') {
-    opponent_username = (char * ) malloc(cphr_len - 2);
-    strncpy(opponent_username, (const char * ) & clear_buf[1], cphr_len-1);
-    opponent_username[cphr_len - 2] = '\0';
-    char choice = clear_buf[cphr_len-1];
-
-    if (choice == '1') {
-    
-      cout << "User " << opponent_username << " accepted the challenge."<<endl;
-      cout<<"Waiting for public key and ip address of opponent.."<<endl;
-     
-    } else
-      cout << "User " << opponent_username << " refused the challenge."<<endl;
+    handleChallengeResponse(clear_buf,cphr_len);
     return true;
   }
   if(*type=='4'){
@@ -764,16 +894,11 @@ bool handleServerMessage(unsigned char * cphr_buf, uint32_t cphr_len, unsigned c
   	session_nonce=(uint32_t*)&clear_buf[2];
   	uint32_t* ip_addr=(uint32_t*)&clear_buf[6];
   	
-		struct sockaddr_in addr;	//debug
-		addr.sin_family = AF_INET;
-	     	addr.sin_port = htons(CLIENT_PORT);
-	     	addr.sin_addr.s_addr=*ip_addr;
-	  /*   	addr.sin_addr.s_addr=INADDR_ANY;
-	     	cout<<"role: "<<role<<endl;	//debug
-	     	cout<<"valore di ip_addr:"<<*ip_addr<<endl;
-		cout<<"my ip address: "<<inet_ntoa(addr.sin_addr)<<endl;
-	     	cout<<"my port: "<<ntohs(addr.sin_port)<<endl;
-*/
+	struct sockaddr_in addr;	//debug
+	addr.sin_family = AF_INET;
+     	addr.sin_port = htons(CLIENT_PORT);
+     	addr.sin_addr.s_addr=*ip_addr;
+
 
 	BIO* mbio=BIO_new(BIO_s_mem());  //deserializing the public key
 	uint32_t pubkey_size=cphr_len-10; //public key size is computed by subtracting other fields size from total size
@@ -795,7 +920,7 @@ bool handleServerMessage(unsigned char * cphr_buf, uint32_t cphr_len, unsigned c
 		
 		//Digital signature must be sent to the client for authentication
 		// create the plaintext to be signed  //debug
-		string s=username+toString(*session_nonce,10);
+		string s=myUsername+toString(*session_nonce,10);
 		unsigned char* clear_buf=(unsigned char*)s.c_str();
 		unsigned int clear_size=strlen((const char*)clear_buf);
 		sendDigitalSignature(opponent_sock,clear_buf,clear_size); 
@@ -831,44 +956,18 @@ bool handleServerMessage(unsigned char * cphr_buf, uint32_t cphr_len, unsigned c
 		 
 		 cout << "Authentication completed!" << endl<<endl;
 		 generateSessionKey(opponent_sock,opponent_username);
-		 cout<<"Session key generated!"<<endl;
+		 cout<<"Session key generated!"<<endl<<endl;
+
+		
+		 myturn=false; 
+		 /*Game interface is now visible on console*/
+		 aCurrentMenu=new GameInterface();
+		 aCurrentMenu->printText();
+		 myturn=true; //the sender has the first move
 	}
 	else{
-		int master_socket;
-		//listen for a connection with the opponent
-		if( (master_socket = socket(AF_INET , SOCK_STREAM , 0)) == 0)
-		{
-		  	perror("socket failed");
-		  	exit(EXIT_FAILURE);
-		}
-		addr.sin_addr.s_addr = INADDR_ANY;
-		//bind the socket to localhost port 3070
-	    	if (bind(master_socket, (struct sockaddr *)&addr, sizeof(addr))<0)
-	    	{
-	      		perror("bind failed");
-			exit(EXIT_FAILURE);
-	    	}
-	    	printf("Listener on port %d \n", CLIENT_PORT);
-	    	
-	    	//try to specify maximum of 3 pending connections for the master socket
-		if (listen(master_socket, 3) < 0)
-	 	{
-		      perror("listen");
-		      exit(EXIT_FAILURE);
-		}
-	    	//accept new connection
-	    	struct sockaddr_in opponent_addr;	
-	    	int addrlen = sizeof(opponent_addr);
-	    	if ((opponent_sock = accept(master_socket, (struct sockaddr *)&opponent_addr, (socklen_t*)&addrlen))<0){
-			perror("accept");
-			cin.get();
-			exit(EXIT_FAILURE);
-	        }
-		//inform user of socket number - used in send and receive commands
-		      printf("New connection , socket fd is %d , ip is : %s , port : %d\n" ,
-		      opponent_sock ,
-		      inet_ntoa(opponent_addr.sin_addr) ,
-		      ntohs(opponent_addr.sin_port));
+
+		listenForClientConnection(addr);
 
 	    	/*digital signature from the opponent must be verified. */
 		//size of next message is received
@@ -893,7 +992,7 @@ bool handleServerMessage(unsigned char * cphr_buf, uint32_t cphr_len, unsigned c
 		 verify_digital_signature(sgnt_buf,sgnt_size, clear_buf, clear_size,opponent_username);
 
 		//Digital signature must be sent to the client for authentication
-	    	 s=username+toString(*session_nonce,10);
+	    	 s=myUsername+toString(*session_nonce,10);
 		 clear_buf=(unsigned char*)s.c_str();
 		 clear_size=strlen((const char*)clear_buf);
 		 sendDigitalSignature(opponent_sock,clear_buf,clear_size); 
@@ -921,26 +1020,49 @@ bool handleServerMessage(unsigned char * cphr_buf, uint32_t cphr_len, unsigned c
 	    	 cout << "Authentication completed!" << endl<<endl;
 		 generateSessionKey(opponent_sock,opponent_username);
 		 cout<<"Session key generated!"<<endl;
+		 
+		 /*Game interface is now visible on console*/
+		 aCurrentMenu=new GameInterface();
+		 aCurrentMenu->printText();
+		 myturn=false; //the receiver has the second move
+		 handleOpponentMessage();
 	}
-	
-	
 	
         BIO_free(mbio);	
   }
   if ( * type == '5') {
      updateConnectedUsers(&clear_buf[1]);
    }
-   
+  if ( * type == '6') {
+
+	     bool isQuitOptionSelected = false; 
+	     string choice;
+	     choice+=clear_buf[1];
+	     updateMenu(choice,isQuitOptionSelected);
+	     myturn=true; 
+	  }
+	  
+   if ( * type == '7'){
+	  checkACKServer(clear_buf,cphr_len);
+	  cout<<"You correctly logged off"<<endl;
+	  sleep(3);  //debug
+	  exit(1);
+	}
    //TODO FREE CLEAR_BUF
+   
+   
+
   return true;
 }
-//asyncronous reception of message 
-void packetHandler(int signum){
+
+
+//reception of session message from server
+void packetReceiver(int signum){
 	int valread;
 	//Digest of message is received
     	unsigned char * tag_buf = (unsigned char * ) malloc(16);
 	if ((valread = read(sock, tag_buf, 16)) == 0) {
-	cout << "client disconnected" << endl;
+	      cout << "client disconnected" << endl;
 	      exit(1);
 	}
 	   /*      cout<<"dimensione tag: "<<valread<<endl;	//debug
@@ -969,7 +1091,7 @@ void packetHandler(int signum){
 */
 	    ( * client_nonce) ++; //nonce is incremented.
 	    //Decrpyt and analyze the message
-	    if (handleServerMessage(cphr_buf, cphr_len, tag_buf,toString(*client_nonce,12)) == false) {
+	    if (handleSessionMessage(cphr_buf, cphr_len, tag_buf,toString(*client_nonce,12),"server") == false) {
 	      cout << "Invalid Message received." << endl;
 	      //(*client_nonce)--;	//nonce is restored.
 	      exit(1);
@@ -977,17 +1099,16 @@ void packetHandler(int signum){
 
 }
 
+
 int main(int argc, char const *argv[])
 {
 
      int valread;
      connect(sock,PORT,"127.0.0.1");
-
-
-		 if(argc != 2){
-			 cout<<"use only one parameter"<<endl;
-			 //exit(1);
-		 }
+     if(argc != 2){
+	cout<<"use only one parameter"<<endl;
+	//exit(1);
+     }
 
      id = atoi(argv[1]); 
      cout<<"id: "<<id<<endl;
@@ -996,19 +1117,18 @@ int main(int argc, char const *argv[])
       client_nonce=handleServerAuthentication(sock,id);
       cout << "Authentication completed!" << endl;
 
-	
-  /*SESSION KEY MUST BE ENSTABLISHED WITH SERVER*/
-  generateSessionKey(sock,"server");
-  cout<<"Session key has been enstablished!"<<endl;
+  	/*SESSION KEY MUST BE ENSTABLISHED WITH SERVER*/
+  	generateSessionKey(sock,"server");
+  	cout<<"Session key has been enstablished!"<<endl;
 
 
 	 //INTERRUPT DRIVEN CONNECTION
-
+	 
 	 int io_handler(), on;
 	 pid_t pgrp;
 
 	 on=1;
-	 signal(SIGIO, packetHandler);
+	 signal(SIGIO, packetReceiver);
 	 // Set the process receiving SIGIO/SIGURG signals to us
 
 	 pgrp=getpid();
@@ -1024,190 +1144,63 @@ int main(int argc, char const *argv[])
 	 }
 
      bool isQuitOptionSelected = false;
+     aCurrentMenu->printText(); // This will call the method of whichever MenuObject we're using, and print the text we want to display
+ 
      while (!isQuitOptionSelected) // We're saying that, as long as the quit option wasn't selected, we keep running
      {
-	     aCurrentMenu->printText(); // This will call the method of whichever MenuObject we're using, and print the text we want to display
+	  
+	     //*User inserts the id of the opponent if aCurrentMenu is first menu, or the move if it is the game interface*//
+             string choice;
+	     cin>>choice;
 
-		//*User inserts the id of the opponent.*//
-		
-		string choice; 
-	     cin >> choice;
-	/*     string opponent_username; 
-	     cin >> opponent_username;	
+		if(choice=="quit"){
+			//isQuitOptionSelected=true; //debug
+			sendDisconnectionRequest();
+			cin>>choice;	//debug
+		}
+		switch(nextAction){
+			case 1:
+			{
+				   //plaintext to encrypt
+				    uint32_t clear_len = opponent_username_length+ 2;
+				    unsigned char* clear_buf=(unsigned char*)malloc(clear_len);
+				    strncpy((char * ) & clear_buf[1],opponent_username, opponent_username_length);
+				    clear_buf[clear_len-1] = (choice == "yes") ? '1' : '0';
+				    clear_buf[0]='3';
+
+				    (*client_nonce)++;  //we increase nonce
+				    send_message(sock, toString(*client_nonce,12), clear_buf, clear_len,"server");
+				    if(choice=="yes")
+				    	cout<<"Waiting for public key and ip address of opponent.."<<endl;
+				    else
+					cout<<"Challenge refused"<<endl; 
+				    nextAction=0;
+				    break;
+			}
+		     	case 2:
+		     	{
+				 //   if(choice=="yes")
+				  	  	//TODO disconnect from server
+				  	  	
+				    delete aCurrentMenu;
+				    aCurrentMenu=new FirstMenu(connectedUsers);
+				    aCurrentMenu->printText();  
+				    isMatchFinished=false;
+				    myturn=true;
+				    close(opponent_sock);
+				    nextAction=0;
+		     		    break;
+		     		    
+		     	}
+		     	default:{
+		     	  	updateMenu(choice,isQuitOptionSelected);
+		     	  	break;
+		     	 }
+		   }
 	     
-	     bool isConnected=false;
-             for(int i = 0; i < connectedUsers.size(); i++){
-             cout<<connectedUsers[i]<<endl;
-	     	if(opponent_username==connectedUsers[i])
-	     		isConnected=true;
-	     }
-	     if(!isConnected){
-	     	cout<<"Invalid input"<<endl;
-	     	continue;
-	     }
-	     
-	     //plaintext to encrypt     
-	    uint32_t clear_size = opponent_username.length()+1; 
-	    unsigned char * clear_buf=(unsigned char *)malloc(clear_size);
-	    clear_buf[0]='2';
-	    strcpy((char*)&clear_buf[1], opponent_username.c_str());
-
-
-	    ( * client_nonce) ++; //nonce is incremented.
-	    send_message(sock, toString(* client_nonce,12), clear_buf, clear_size);
-	    cout<<"Waiting for "<<opponent_username<<" to accept the request..."<<endl<<endl;
-
-		sleep(40);  //debug
-		
-		
-            int choice=1; //DEBUG  */
-	     BaseInterface* aNewMenuPointer = aCurrentMenu->getNextMenu(choice, isQuitOptionSelected); // This will return a new object, of the type of the new menu we want. Also checks if quit was selected
-
-	     if (aNewMenuPointer && aNewMenuPointer != aCurrentMenu) // This is why we set the pointer to 0 when we were creating the new menu - if it's 0, we didn't create a new menu, so we will stick with the old one
-	     {
-			 delete aCurrentMenu; // We're doing this to clean up the old menu, and not leak memory.
-			 aCurrentMenu = aNewMenuPointer; // We're updating the 'current menu' with the new menu we just created
-		 }
-		 
-	}
-
-
-/*Grid g;
-g.printGrid();
-cin.get();
-g.setCell(1,2, blue);
-g.printGrid();*/
-/*
-int ret = 0;
-
-int sock = 0, valread;
-struct sockaddr_in serv_addr;
-char buffer[BUFFER_SIZE] = {0};
-cin>>buffer;
-int clear_size = strlen(buffer);
-unsigned char* clear_buf = (unsigned char*)malloc(clear_size);
-memcpy(clear_buf, buffer, clear_size);
-
-cout<<"clear text: " <<clear_buf<< endl;
-cout<<"clear size: " <<clear_size<<endl;
-if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0)
-{
-printf("\n Socket creation error \n");
-return -1;
-}
-
-serv_addr.sin_family = AF_INET;
-serv_addr.sin_port = htons(PORT);
-
-// Convert IPv4 and IPv6 addresses from text to binary form
-if(inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr)<=0)
-{
-printf("\nInvalid address/ Address not supported \n");
-return -1;
-}
-
-if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
-{
-printf("\nConnection Failed \n");
-return -1;
-}
-
-
-// declare some useful variables:
-char buffer[BUFFER_SIZE] = {0};
-cin>>buffer;
-int clear_size = strlen(buffer);
-unsigned char* clear_buf = (unsigned char*)malloc(clear_size);
-memcpy(clear_buf, buffer, clear_size);
-
-const EVP_CIPHER* cipher = EVP_aes_128_cbc();
-int iv_len = EVP_CIPHER_iv_length(cipher);
-int block_size = EVP_CIPHER_block_size(cipher);
-
-// Assume key is hard-coded (this is not a good thing, but it is not our focus right now)
-unsigned char *key = (unsigned char *)"0123456789012345";
-// Allocate memory for and randomly generate IV:
-unsigned char* iv = (unsigned char*)malloc(iv_len);
-// Seed OpenSSL PRNG
-RAND_poll();
-// Generate 16 bytes at random. That is my IV
-RAND_bytes((unsigned char*)&iv[0],iv_len);
-
-// check for possible integer overflow in (clear_size + block_size) --> PADDING!
-// (possible if the plaintext is too big, assume non-negative clear_size and block_size):
-if(clear_size > INT_MAX - block_size) { cerr <<"Error: integer overflow (file too big?)\n"; exit(1); }
-// allocate a buffer for the ciphertext:
-int enc_buffer_size = clear_size + block_size;
-unsigned char* cphr_buf = (unsigned char*) malloc(enc_buffer_size);
-if(!cphr_buf) { cerr << "Error: malloc returned NULL (file too big?)\n"; exit(1); }
-
-//Create and initialise the context with used cipher, key and iv
-EVP_CIPHER_CTX *ctx;
-ctx = EVP_CIPHER_CTX_new();
-if(!ctx){ cerr << "Error: EVP_CIPHER_CTX_new returned NULL\n"; exit(1); }
-ret = EVP_EncryptInit(ctx, cipher, key, iv);
-cout<<"iv: "<<iv<<endl;
-if(ret != 1){
-cerr <<"Error: Encrypt Init Failed\n";
-exit(1);
-}
-int update_len = 0; // bytes encrypted at each chunk
-int total_len = 0; // total encrypted bytes
-
-// Encrypt Update: one call is enough because our file is small.
-//TODO while
-ret = EVP_EncryptUpdate(ctx, cphr_buf, &update_len, clear_buf, clear_size);
-if(ret != 1){
-cerr <<"Error: EncryptUpdate Failed\n";
-exit(1);
-}
-total_len += update_len;
-cout<<"partial: "<<total_len<<endl;
-
-//Encrypt Final. Finalize the encryption and adds the padding
-ret = EVP_EncryptFinal(ctx, cphr_buf + total_len, &update_len);
-if(ret != 1){
-cerr <<"Error: EncryptFinal Failed\n";
-exit(1);
-}
-total_len += update_len;
-int cphr_size = total_len;
-
-// delete the context and the plaintext from memory:
-EVP_CIPHER_CTX_free(ctx);
-// Telling the compiler it MUST NOT optimize the following instruction.
-// With optimization the memset would be skipped, because of the next free instruction.
-#pragma optimize("", off)
-memset(clear_buf, 0, clear_size);
-#pragma optimize("", on)
-free(clear_buf);
-
-// write the IV and the ciphertext into a '.enc' file:
-
-string cphr_file_name = "iv.enc";
-FILE* cphr_file = fopen(cphr_file_name.c_str(), "wb");
-if(!cphr_file) { cerr << "Error: cannot open file '" << cphr_file_name << "' (no permissions?)\n"; exit(1); }
-
-ret = fwrite(iv, 1, EVP_CIPHER_iv_length(cipher), cphr_file);
-if(ret < EVP_CIPHER_iv_length(cipher)) { cerr << "Error while writing the file '" << cphr_file_name << "'\n"; exit(1); }
-
-fclose(cphr_file);
-
-send(sock , cphr_buf , cphr_size , 0 );
-cout<<"crypted: " << cphr_buf<<endl;
-cout<<"crypted size: "<< cphr_size<<endl;
-
-
-// deallocate buffers:
-free(cphr_buf);
-free(iv);
-*/
-cin.get();
-cin.get();
-shutdown(sock, 0);
-close(sock);
-cout<<strerror(errno)<<endl;
-
+	     if(myturn==false) //it means that the match has started (aCurrentMenu is the game interface) and that i must receive the move of the opponent.
+			handleOpponentMessage();  
+      }
 return 0;
 }
 

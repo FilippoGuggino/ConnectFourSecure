@@ -83,11 +83,11 @@ int gcm_encrypt(unsigned char *plaintext, int plaintext_len,
     /* Get the tag */
     if(1 != EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_GET_TAG, 16, tag))
         handleErrors();
-  /*     cout<<"iv:"<<endl;	//debug
+/*       cout<<"iv:"<<endl;	//debug
 		 BIO_dump_fp (stdout, (const char *)iv, 12);
  
   cout<<"chiave usata:"<<endl;	//debug
-		 BIO_dump_fp (stdout, (const char *)key, 128);
+		 BIO_dump_fp (stdout, (const char *)key, 32);
 
   cout<<"messaggio cifrato:"<<endl;	//debug
 		 BIO_dump_fp (stdout, (const char *)ciphertext, ciphertext_len);
@@ -136,12 +136,12 @@ int gcm_decrypt(unsigned char *ciphertext, int ciphertext_len,
 
     /* Clean up */
     EVP_CIPHER_CTX_cleanup(ctx);
-    
-  /*  cout<<"iv:"<<endl;	//debug
+ /*
+    cout<<"iv:"<<endl;	//debug
 		 BIO_dump_fp (stdout, (const char *)iv, 12);
  
   cout<<"chiave usata:"<<endl;	//debug
-		 BIO_dump_fp (stdout, (const char *)key, 128);
+		 BIO_dump_fp (stdout, (const char *)key, 32);
    
   cout<<"messaggio cifrato:"<<endl;	//debug
 		 BIO_dump_fp (stdout, (const char *)ciphertext, ciphertext_len);
@@ -499,6 +499,32 @@ void generateUserInfoMessage(uint32_t* nonce,string dest_username,int dest_socke
 	
 	        BIO_free(mbio);
 }
+
+void handleUserDisconnection(string username){
+    string msg="disconnectionRequestACK";
+    //todo controllare
+    uint32_t clear_size = msg.length()+1;
+   	unsigned char * clear_buf=(unsigned char *)malloc(clear_size);
+   	clear_buf[0]='7';
+   	strcpy((char*)&clear_buf[1], msg.c_str());
+    	int userSocket;
+   	uint32_t client_nonce;
+   	for(int i=0;i<connectedUsers.size();i++){	 //retrieve socket+nonce of the user
+  	    	if(connectedUsers[i].username==username){
+  	    		client_nonce=++connectedUsers[i].nonce;
+  	    		userSocket=connectedUsers[i].socket;
+  	    		break;
+  	    	}
+        }
+
+    send_message(userSocket, toString(client_nonce,12), clear_buf, clear_size,username);
+    bool success = removeFromConnectedUsers(username);
+    if (!success){
+	cout<<"Error: "<<username<<" is already unlogged"<<endl;
+        exit(1);
+    }
+}
+
 //Message from the client must be decrypted,verified and then analyzed
 bool handleClientMessage(int sd,unsigned char* cphr_buf,uint32_t cphr_len,unsigned char* tag_buf,string client_nonce,string username){
   int valread = 0;
@@ -595,7 +621,22 @@ bool handleClientMessage(int sd,unsigned char* cphr_buf,uint32_t cphr_len,unsign
 		generateUserInfoMessage(nonce,sender_username,sender_socket,opponent_username,ip,'0'); //send opponent's info to sender of the challenge
 		
 	 }
-  }
+    }
+    if (*type=='7'){
+
+	    string client_msg((const char*)&clear_buf[1],cphr_len-1);
+	    if (client_msg=="disconnectionRequest"){
+	  	handleUserDisconnection(username);
+	  	close(sd);
+	  	cout<<"User "<<username<<" correctly logged off"<<endl;
+	    }
+	    else {
+	      cout<<"Invalid disconnection message received";
+	      exit(1);
+	    }
+
+	  }
+  
 
   return true;
 }
@@ -613,7 +654,8 @@ bool handleClientMessage(int sd,unsigned char* cphr_buf,uint32_t cphr_len,unsign
     if ((valread = read( sd , client_nonce, sizeof(uint32_t))) == 0)
     {
       cout<<"client disconnected"<<endl;
-      return false;
+      close(sd);
+      //return false;
     }
     // generated nonce is sent to the server
     send(sd , server_nonce , sizeof(uint32_t) , 0 );
@@ -634,7 +676,7 @@ bool handleClientMessage(int sd,unsigned char* cphr_buf,uint32_t cphr_len,unsign
     if ((valread = read( sd , &client_sign_size, sizeof(uint32_t))) == 0)
     {
       cout<<"client disconnected"<<endl;
-      return false;
+	  close(sd);
     }
 
     //digital signature of the client is received.
@@ -642,7 +684,7 @@ bool handleClientMessage(int sd,unsigned char* cphr_buf,uint32_t cphr_len,unsign
     if ((valread = read( sd , client_sign, client_sign_size)) == 0)
     {
       cout<<"client disconnected"<<endl;
-      return false;
+	  	close(sd);
     }
    
     //size of next message is received
@@ -650,7 +692,7 @@ bool handleClientMessage(int sd,unsigned char* cphr_buf,uint32_t cphr_len,unsign
     if ((valread = read( sd , &size, sizeof(uint32_t))) == 0)
     {
       cout<<"client disconnected"<<endl;
-      return false;
+	  	close(sd);
     }
 
 
@@ -659,7 +701,7 @@ bool handleClientMessage(int sd,unsigned char* cphr_buf,uint32_t cphr_len,unsign
     if ((valread = read( sd , usernameTmp, size)) == 0)
     {
       cout<<"client disconnected"<<endl;
-      return false;
+	  	close(sd);
     }
 
     string str( reinterpret_cast<char const*>(usernameTmp), valread ) ;
@@ -718,7 +760,7 @@ printf("DH: param phase \n"); //debug
   if ((valread = recv( socket , &peer_pubkey_size, sizeof(long),0)) == 0)
   {
   	cout<<"client disconnected"<<endl;
-    exit(1);
+	  	close(socket);
   }
 
   unsigned char* peer_pubkey_buf =(unsigned char*)malloc(peer_pubkey_size);
@@ -728,7 +770,8 @@ printf("DH: param phase \n"); //debug
   //message received
   if (valread = recv( socket , peer_pubkey_buf, peer_pubkey_size,MSG_WAITALL) == 0)
   {
-    exit(1);
+    cout<<"client disconnected"<<endl;
+	  	close(socket);
   }
 
   BIO* peer_mbio = BIO_new(BIO_s_mem());
@@ -826,8 +869,7 @@ printf("DH: param phase \n"); //debug
     if ((valread = read( sd , tag_buf, 16)) == 0)
        {
   	cout<<"client disconnected"<<endl;
-  	removeFromConnectedUsers(username);
-  	exit(1);
+	  	close(sd);
        }
 
     //size of next message is received		
@@ -835,8 +877,7 @@ printf("DH: param phase \n"); //debug
     if ((valread = read( sd , &cphr_len, sizeof(uint32_t))) == 0)
        {
   	cout<<"client disconnected"<<endl;
-  	removeFromConnectedUsers(username);
-  	exit(1);
+	  	close(sd);
        }
  
   //message from client is received
@@ -844,8 +885,7 @@ printf("DH: param phase \n"); //debug
     if ((valread = read( sd , cphr_buf, cphr_len)) == 0)
        {
   	cout<<"client disconnected"<<endl;
-  	removeFromConnectedUsers(username);
-  	exit(1);
+	  	close(sd);
        }
 
     for(int i=0;i<connectedUsers.size();i++){	//nonce is incremented at message reach.  
