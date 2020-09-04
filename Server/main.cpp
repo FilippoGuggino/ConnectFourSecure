@@ -83,17 +83,17 @@ int gcm_encrypt(unsigned char *plaintext, int plaintext_len,
     /* Get the tag */
     if(1 != EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_GET_TAG, 16, tag))
         handleErrors();
-/*       cout<<"iv:"<<endl;	//debug
+      /* cout<<"iv:"<<endl;	//debug
 		 BIO_dump_fp (stdout, (const char *)iv, 12);
- 
+
   cout<<"chiave usata:"<<endl;	//debug
 		 BIO_dump_fp (stdout, (const char *)key, 32);
 
   cout<<"messaggio cifrato:"<<endl;	//debug
 		 BIO_dump_fp (stdout, (const char *)ciphertext, ciphertext_len);
    cout<<"messaggio decifrato:"<<endl;	//debug
-		 BIO_dump_fp (stdout, (const char *)plaintext, plaintext_len);
-       */
+		 BIO_dump_fp (stdout, (const char *)plaintext, plaintext_len);*/
+
     /* Clean up */
     EVP_CIPHER_CTX_free(ctx);
     return ciphertext_len;
@@ -110,9 +110,9 @@ int gcm_decrypt(unsigned char *ciphertext, int ciphertext_len,
     int len;
     int plaintext_len;
     int ret;
-    
 
-    
+
+
     /* Create and initialise the context */
     if(!(ctx = EVP_CIPHER_CTX_new()))
         handleErrors();
@@ -136,26 +136,26 @@ int gcm_decrypt(unsigned char *ciphertext, int ciphertext_len,
 
     /* Clean up */
     EVP_CIPHER_CTX_cleanup(ctx);
- /*
+
     cout<<"iv:"<<endl;	//debug
 		 BIO_dump_fp (stdout, (const char *)iv, 12);
- 
+
   cout<<"chiave usata:"<<endl;	//debug
 		 BIO_dump_fp (stdout, (const char *)key, 32);
-   
+
   cout<<"messaggio cifrato:"<<endl;	//debug
 		 BIO_dump_fp (stdout, (const char *)ciphertext, ciphertext_len);
    cout<<"messaggio decifrato:"<<endl;	//debug
 		 BIO_dump_fp (stdout, (const char *)plaintext, plaintext_len);
 
-*/
+
     if(ret > 0) {
         /* Success */
         plaintext_len += len;
         return plaintext_len;
     } else {
-    
-    	   
+
+
         /* Verify failed */
         return -1;
     }
@@ -172,7 +172,7 @@ unsigned char* get_session_key(string username){
 	    cerr << "Error: cannot open file '" << seskey_file_name << "' (missing?)\n";
 	    exit(1);
 	  }
-	  
+
 	  // get the ss size:
 	  // (assuming no failures in fseek() and ftell())
 	  //TODO we can't assume any failure
@@ -198,45 +198,14 @@ void send_message(int sock,string client_nonce,unsigned char* clear_buf,uint32_t
   	  unsigned char* session_key=get_session_key(username);
 
 	  gcm_encrypt(clear_buf,clear_size,iv,12,session_key,iv,12,cphr_buf, tag_buf);
-	 	
+
 	  send(sock , tag_buf , 16 , 0 );	//tag with fixed size
 	  send(sock , (const char*)&clear_size , sizeof(uint32_t) , 0 );	//size of ciphertext  debug
-	  send(sock , cphr_buf , clear_size , 0 );	//ciphertext	
-	
-}
+	  send(sock , cphr_buf , clear_size , 0 );	//ciphertext
 
-bool removeFromConnectedUsers(string s){
-  //lock_guard differently from mu.lock and mu.unlock release the lock when the object is destructed(aka at the end of the function)
-  //with mu.lock/unlock if an exception raise between the twos the lock is not released
-  lock_guard<mutex> guard(connectedUsersMutex);
-  int index = indexOf(connectedUsers, s);
-  if(index == -1){
-    cout<<"User "<<s<<" doesn't exists."<<endl;
-    return false;
-  }
-  connectedUsers.erase(connectedUsers.begin() + index);
-  return true;
-}
-
-//synchronized function, only one thread at a time can enter this function
-//update connectedUsers
-bool addToConnectedUsers(int sd, string username,uint32_t nonce, struct sockaddr_in address){
-  lock_guard<mutex> guard(connectedUsersMutex);
-  if(indexOf(connectedUsers, username) == -1){
-    struct UserInfo tmp;
-    tmp.socket = sd;
-    tmp.username = username;
-    tmp.nonce = nonce; 
-    tmp.address = address;
-    connectedUsers.push_back(tmp);
-    return true;
-  }
-  cout<<"User "<<username<<" already connected. Closing connection..."<<endl;
-  return false;
 }
 
 void printConnectedUsers(){
-  lock_guard<mutex> guard(connectedUsersMutex);
   cout<<endl<<"Online users:"<<endl;
   for(int i = 0; i < connectedUsers.size(); i++){
     cout<<connectedUsers[i].username<<endl;
@@ -244,7 +213,6 @@ void printConnectedUsers(){
 }
 
 unsigned char* forgeUpdatePacket(){
-  lock_guard<mutex> guard(connectedUsersMutex);
   unsigned char* clear_buf;
 
   //allocate dimension of the whole packet
@@ -290,6 +258,38 @@ void updateClientsWithConnectedUsersList(){
   unsigned char* packet;
   packet = forgeUpdatePacket();
   free(packet);
+}
+
+bool removeFromConnectedUsers(string s){
+  //lock_guard differently from mu.lock and mu.unlock release the lock when the object is destructed(aka at the end of the function)
+  //with mu.lock/unlock if an exception raise between the twos the lock is not released
+  lock_guard<mutex> guard(connectedUsersMutex);
+  int index = indexOf(connectedUsers, s);
+  if(index == -1){
+    cout<<"User "<<s<<" doesn't exists."<<endl;
+    return false;
+  }
+  connectedUsers.erase(connectedUsers.begin() + index);
+  updateClientsWithConnectedUsersList();
+  return true;
+}
+
+//synchronized function, only one thread at a time can enter this function
+//update connectedUsers
+bool addToConnectedUsers(int sd, string username,uint32_t nonce, struct sockaddr_in address){
+  lock_guard<mutex> guard(connectedUsersMutex);
+  if(indexOf(connectedUsers, username) == -1){
+    struct UserInfo tmp;
+    tmp.socket = sd;
+    tmp.username = username;
+    tmp.nonce = nonce;
+    tmp.address = address;
+    connectedUsers.push_back(tmp);
+    return true;
+  }
+  cout<<"User "<<username<<" already connected. Closing connection..."<<endl;
+  updateClientsWithConnectedUsersList();
+  return false;
 }
 
 void send_digital_signature(int sock,unsigned char* clear_buf,unsigned int clear_size){
@@ -449,17 +449,17 @@ bool verify_client_signature(string username,unsigned char* sgnt_buf,unsigned in
 
     X509 *cert=PEM_read_X509(cert_file, NULL, NULL, NULL);
     fclose(cert_file);
-    
+
     BIO* mbio=BIO_new(BIO_s_mem()); //serializing the certificate
     PEM_write_bio_X509(mbio,cert);
     char* cert_buf = NULL;
     long cert_size = BIO_get_mem_data(mbio,&cert_buf);
-  
+
 
     send(sock , (const char*)&cert_size , sizeof(uint32_t) , 0 );  //certificate size
     send(sock , cert_buf , cert_size , 0 );
   }
-  
+
 void generateUserInfoMessage(uint32_t* nonce,string dest_username,int dest_socket,string opponent_username,uint32_t ip,char role){
 
 		// load the opponent's public key:
@@ -474,7 +474,7 @@ void generateUserInfoMessage(uint32_t* nonce,string dest_username,int dest_socke
 	  	PEM_write_bio_PUBKEY(mbio,pubkey);
 		char* pubkey_buf = NULL;
 	 	long pubkey_size = BIO_get_mem_data(mbio,&pubkey_buf);
-	
+
 		uint32_t dest_nonce;
 		for(int i=0;i<connectedUsers.size();i++){	 //increase  nonce
 			if(connectedUsers[i].username==dest_username){
@@ -482,7 +482,7 @@ void generateUserInfoMessage(uint32_t* nonce,string dest_username,int dest_socke
 		    	        break;
 		    	}
 		}
-		
+
 		//free(clear_buf); //debug
 		//plaintext to send to the user
 		uint32_t clear_size=10+pubkey_size;
@@ -495,29 +495,31 @@ void generateUserInfoMessage(uint32_t* nonce,string dest_username,int dest_socke
 
 	        cout<<endl<<"Invio chiave pubblica e indirizzo ip a "<<dest_username<<endl;
 	        send_message(dest_socket,toString(dest_nonce,12),clear_buf,clear_size,dest_username);
-		
-	
+
+
 	        BIO_free(mbio);
 }
 
 void handleUserDisconnection(string username){
-    string msg="disconnectionRequestACK";
+    unsigned char* msg = (unsigned char*)"discACK";
     //todo controllare
-    uint32_t clear_size = msg.length()+1;
+    uint32_t clear_size = 8;
    	unsigned char * clear_buf=(unsigned char *)malloc(clear_size);
    	clear_buf[0]='7';
-   	strcpy((char*)&clear_buf[1], msg.c_str());
+   	memcpy((char*)&clear_buf[1], msg, 7);
     	int userSocket;
    	uint32_t client_nonce;
    	for(int i=0;i<connectedUsers.size();i++){	 //retrieve socket+nonce of the user
-  	    	if(connectedUsers[i].username==username){
-  	    		client_nonce=++connectedUsers[i].nonce;
+  	    	if(connectedUsers[i].username.compare(username)==0){
+			connectedUsers[i].nonce++;
+  	    		client_nonce = connectedUsers[i].nonce;
   	    		userSocket=connectedUsers[i].socket;
   	    		break;
   	    	}
         }
 
     send_message(userSocket, toString(client_nonce,12), clear_buf, clear_size,username);
+
     bool success = removeFromConnectedUsers(username);
     if (!success){
 	cout<<"Error: "<<username<<" is already unlogged"<<endl;
@@ -526,7 +528,7 @@ void handleUserDisconnection(string username){
 }
 
 //Message from the client must be decrypted,verified and then analyzed
-bool handleClientMessage(int sd,unsigned char* cphr_buf,uint32_t cphr_len,unsigned char* tag_buf,string client_nonce,string username){
+int handleClientMessage(int sd,unsigned char* cphr_buf,uint32_t cphr_len,unsigned char* tag_buf,string client_nonce,string username){
   int valread = 0;
 
   unsigned char* iv=(unsigned char*)malloc(12);
@@ -536,7 +538,7 @@ bool handleClientMessage(int sd,unsigned char* cphr_buf,uint32_t cphr_len,unsign
   valread=gcm_decrypt(cphr_buf, cphr_len, iv, 12, tag_buf, session_key, iv, 12, clear_buf);
   if(valread==-1)
   	return false;
-  	
+
   unsigned char* type=&clear_buf[0];
  //type=2 --> challenge request message
  //type=3 --> challenge response message
@@ -545,7 +547,7 @@ bool handleClientMessage(int sd,unsigned char* cphr_buf,uint32_t cphr_len,unsign
  	char* opponent_username=(char*)malloc(cphr_len-1);
  	strncpy(opponent_username,(const char*)&clear_buf[1],cphr_len);
  	opponent_username[cphr_len-1]='\0';
- 	
+
  	int opponent_socket;
  	uint32_t opponent_nonce;
  	for(int i=0;i<connectedUsers.size();i++){	 //retrieve socket+nonce of receiver of the challenge.
@@ -556,21 +558,21 @@ bool handleClientMessage(int sd,unsigned char* cphr_buf,uint32_t cphr_len,unsign
 	    	}
     	}
  	string sender_username=username; //sender of the request.
- 	 //forward request to the receiver 
+ 	 //forward request to the receiver
  	//plaintext to encrypt
 	string s='2'+sender_username;
 	unsigned char*clear_buf=(unsigned char*)s.c_str();
 	uint32_t clear_size=s.size();
 	cout<<endl<<"Richiesta di sfida di "<<sender_username<<" da inoltrare a "<<opponent_username<<": "<<clear_buf<<endl;
  	send_message(opponent_socket,toString(opponent_nonce,12),clear_buf,clear_size,opponent_username);
- 	
+
   }
   if(*type=='3'){
   	//Retrieve username of sender of challenge request
  	char* sender_username=(char*)malloc(cphr_len-1);
  	strncpy(sender_username,(const char*)&clear_buf[1],cphr_len-1);
  	sender_username[cphr_len-2]='\0';
- 	
+
  	int sender_socket;
  	uint32_t sender_nonce;
  	for(int i=0;i<connectedUsers.size();i++){	 //retrieve socket+nonce of sender of the challenge.
@@ -581,7 +583,7 @@ bool handleClientMessage(int sd,unsigned char* cphr_buf,uint32_t cphr_len,unsign
 	    	}
     	}
  	string opponent_username=username; //sender of the request.
- 	
+
  	//forward response to the request sender
  	//plaintext to encrypt
  	char choice=clear_buf[cphr_len-1];
@@ -590,45 +592,46 @@ bool handleClientMessage(int sd,unsigned char* cphr_buf,uint32_t cphr_len,unsign
 	uint32_t clear_size=s.size();  //debug
 	cout<<endl<<"Risposta di sfida di "<<opponent_username<<" da inoltrare a "<<sender_username<<": "<<clear_buf<<endl;
  	send_message(sender_socket,toString(sender_nonce,12),clear_buf,clear_size,sender_username);
- 	
+
  	//if challenge is accepted send to both users a new generated session nonce and opponent's public key & ip address
  	if(choice=='1'){
 	 	//
 	 	uint32_t* nonce = (uint32_t*)malloc(sizeof(uint32_t)); //generate a session nonce for both users
 		RAND_poll();
 		RAND_bytes((unsigned char*)&nonce[0],sizeof(uint32_t));
-		
-		//Retrieve opponent' ip 
+
+		//Retrieve opponent' ip
 		uint32_t ip;
 		uint32_t dest_nonce;
-		for(int i=0;i<connectedUsers.size();i++){	 
+		for(int i=0;i<connectedUsers.size();i++){
 			if(connectedUsers[i].username==opponent_username){
 		    		ip=connectedUsers[i].address.sin_addr.s_addr;
 		    	        break;
 		    	}
 		}
-		
+
 		int opponent_socket;
-		for(int i=0;i<connectedUsers.size();i++){	//socket of opponent is retrieved  
+		for(int i=0;i<connectedUsers.size();i++){	//socket of opponent is retrieved
 		    	if(connectedUsers[i].username==opponent_username){
 		    		opponent_socket=(connectedUsers[i].socket);
 		    		break;
 		    	}
 		    }
 
-		generateUserInfoMessage(nonce,opponent_username,opponent_socket,sender_username,ip,'1'); //send opponent's info to sender of the challenge    
-		sleep(1);  //debug wait for the opponent to listen for new connections...
+		generateUserInfoMessage(nonce,opponent_username,opponent_socket,sender_username,ip,'1'); //send opponent's info to sender of the challenge
 		generateUserInfoMessage(nonce,sender_username,sender_socket,opponent_username,ip,'0'); //send opponent's info to sender of the challenge
-		
+		removeFromConnectedUsers(opponent_username);
+		removeFromConnectedUsers(sender_username);
 	 }
     }
     if (*type=='7'){
 
 	    string client_msg((const char*)&clear_buf[1],cphr_len-1);
-	    if (client_msg=="disconnectionRequest"){
+	    if (client_msg.compare("disc")==0){
 	  	handleUserDisconnection(username);
 	  	close(sd);
 	  	cout<<"User "<<username<<" correctly logged off"<<endl;
+		return 7;
 	    }
 	    else {
 	      cout<<"Invalid disconnection message received";
@@ -636,7 +639,7 @@ bool handleClientMessage(int sd,unsigned char* cphr_buf,uint32_t cphr_len,unsign
 	    }
 
 	  }
-  
+
 
   return true;
 }
@@ -686,7 +689,7 @@ bool handleClientMessage(int sd,unsigned char* cphr_buf,uint32_t cphr_len,unsign
       cout<<"client disconnected"<<endl;
 	  	close(sd);
     }
-   
+
     //size of next message is received
     unsigned int size;
     if ((valread = read( sd , &size, sizeof(uint32_t))) == 0)
@@ -840,7 +843,7 @@ printf("DH: param phase \n"); //debug
     string username;
     int valread;
     uint32_t client_nonce;
-  
+
     if(handleAuthentication(sd,username,&client_nonce) == false){
       cout<<"Authentication Error, abort connection"<<endl;
           //TODO abort connection only with that client
@@ -858,13 +861,12 @@ printf("DH: param phase \n"); //debug
 
     //wait for the client to enable interrupt-driven socket connection
     //this pause only the thread, new connections can still occur during this time
-    sleep(1);
     updateClientsWithConnectedUsersList();
 
   //session with client is handled
   while(true){
-    
-    //Digest of message is received		
+
+    //Digest of message is received
     unsigned char* tag_buf=(unsigned char*)malloc(16);
     if ((valread = read( sd , tag_buf, 16)) == 0)
        {
@@ -872,14 +874,14 @@ printf("DH: param phase \n"); //debug
 	  	close(sd);
        }
 
-    //size of next message is received		
+    //size of next message is received
     uint32_t cphr_len;
     if ((valread = read( sd , &cphr_len, sizeof(uint32_t))) == 0)
        {
   	cout<<"client disconnected"<<endl;
 	  	close(sd);
        }
- 
+
   //message from client is received
     unsigned char* cphr_buf=(unsigned char*)malloc(cphr_len);
     if ((valread = read( sd , cphr_buf, cphr_len)) == 0)
@@ -888,20 +890,24 @@ printf("DH: param phase \n"); //debug
 	  	close(sd);
        }
 
-    for(int i=0;i<connectedUsers.size();i++){	//nonce is incremented at message reach.  
+    for(int i=0;i<connectedUsers.size();i++){	//nonce is incremented at message reach.
     	if(connectedUsers[i].username==username){
     		client_nonce=++(connectedUsers[i].nonce);
     		break;
     	}
     }
     //Decrpyt and analyze the message
-    if(handleClientMessage(sd,cphr_buf,cphr_len,tag_buf,toString(client_nonce,12),username)==false){
-	 cout<<"Invalid Message received."<<endl;
-	// client_nonce--;	//nonce is restored.
-	 exit(1);
+    int ret = handleClientMessage(sd,cphr_buf,cphr_len,tag_buf,toString(client_nonce,12),username);
+    if(ret == false){
+		 cout<<"Invalid Message received."<<endl;
+		// client_nonce--;	//nonce is restored.
+		 exit(1);
 	 }
-  }	    
-    
+	else if(ret == 7){
+		break;
+	}
+  }
+	cout<<"Chiusura thread"<<endl;
 }
 
   int main(int argc, char const *argv[])

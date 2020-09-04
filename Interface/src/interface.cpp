@@ -24,10 +24,8 @@ void BaseInterface::clear(){
   #endif
 }
 
-
 void BaseInterface::printText(){
   clear();
-
   cout << m_MenuText << endl;
 }
 
@@ -74,7 +72,7 @@ BaseInterface* FirstMenu::getNextMenu(string opponent_username, bool& iIsQuitOpt
     //cout<<"Invalid input"<<endl;
     m_MenuText+="\n"+opponent_username;
     m_MenuText+=" is an invalid username...select another user: ";
-    
+
     return this;
   }
   /*challenge request must be sent to the server*/
@@ -192,7 +190,7 @@ BaseInterface* GameInterface::getNextMenu(string colStr, bool& iIsQuitOptionSele
 	  	  uint32_t clear_size = 2;
 		  unsigned char * clear_buf=(unsigned char *)malloc(clear_size);
 		  clear_buf[0]='6';
-		  
+
 		  clear_buf[1]=colStr[0];
 		  ( * session_nonce) ++; //nonce is incremented.
 		  send_message(opponent_sock, toString(* session_nonce,12), clear_buf, clear_size,opponent_username);
@@ -201,7 +199,7 @@ BaseInterface* GameInterface::getNextMenu(string colStr, bool& iIsQuitOptionSele
   }
   else
   	m_MenuText+="\nInvalid move. Choose a valid column: ";
-  
+
   return this;
 }
 
@@ -219,7 +217,7 @@ bool GameInterface::setCell(int col, cell color){
 	      updateGrid();
 	      if(checkWinCondition(i, col,color)){
 	      		if(myturn==true)
-	      			m_MenuText+="\nYOU WON!"; 
+	      			m_MenuText+="\nYOU WON!";
 	      		else
 	      			m_MenuText+="\nYOU LOST!";
 	      		isMatchFinished=true;
