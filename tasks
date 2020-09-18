@@ -38,10 +38,10 @@ struct DispatchUserInfoForChallenge{
 Autenticazione server-client:
 -il client genera client_nonce e lo invia al server.
 -il server genera server_nonce e lo invia al client.
--il server invia il proprio certificato e la firma digitale di "Hello"||server_nonce
+-il server invia il proprio certificato e la firma digitale di "Hello"||client_nonce
 -il client valida il certificato e verifica la firma digitale.
--il client invia la firma digitale di username|client_nonce
--il server verifica la firma e invia al client la firma digitale di "EndAuthentication"||server_nonce
+-il client invia la firma digitale di username|server_nonce
+-il server verifica la firma e invia al client la firma digitale di "EndAuthentication"||client_nonce
 -il client verifica la firma 
 
 Autenticazione client-client (C1 manda la richiesta di sfida e C2 la accetta)

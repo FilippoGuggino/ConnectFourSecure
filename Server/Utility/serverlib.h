@@ -9,6 +9,7 @@ struct UserInfo{
   uint32_t nonce;
   sockaddr_in address;
   bool playing=false;
+  unsigned char* ses_key;
 };
 /*
 struct ChallengeRequest{

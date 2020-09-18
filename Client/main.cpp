@@ -39,6 +39,8 @@ vector<string> connectedUsers;
 int id;
 uint32_t * client_nonce;
 uint32_t *session_nonce;
+unsigned char* server_ses_key;
+unsigned char* opponent_ses_key;
 string myUsername;
 char* opponent_username;
 int opponent_username_length; //debug
@@ -46,6 +48,7 @@ bool myturn=true;
 bool isMatchFinished=false;
 int nextAction; //0--> default  1--> handle challenge request  2-->end match
 cell color=red;
+EVP_PKEY* dh_prv_key = NULL;
 BaseInterface* aCurrentMenu = new FirstMenu(connectedUsers);
 
 bool handleSessionMessage(unsigned char * cphr_buf, uint32_t cphr_len, unsigned char * tag_buf,string nonce,string username);
@@ -247,7 +250,7 @@ int gcm_decrypt(unsigned char * ciphertext, int ciphertext_len,
 
 		/* Clean up */
 		EVP_CIPHER_CTX_cleanup(ctx);
-
+/*
 		cout<<"iv:"<<endl;	//debug
 		BIO_dump_fp (stdout, (const char *)iv, 12);
 
@@ -258,7 +261,7 @@ int gcm_decrypt(unsigned char * ciphertext, int ciphertext_len,
 		BIO_dump_fp (stdout, (const char *)ciphertext, ciphertext_len);
 		cout<<"messaggio decifrato:"<<endl;	//debug
 		BIO_dump_fp (stdout, (const char *)plaintext, plaintext_len);
-
+*/
 		if (ret > 0) {
 			/* Success */
 			plaintext_len += len;
@@ -300,7 +303,7 @@ int gcm_decrypt(unsigned char * ciphertext, int ciphertext_len,
 			/* Get the tag */
 			if (1 != EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_GET_TAG, 16, tag))
 			handleErrors();
-
+/*
 			cout<<"iv:"<<endl;	//debug
 			BIO_dump_fp (stdout, (const char *)iv, 12);
 
@@ -310,7 +313,7 @@ int gcm_decrypt(unsigned char * ciphertext, int ciphertext_len,
 			cout<<"messaggio cifrato:"<<endl;	//debug
 			BIO_dump_fp (stdout, (const char *)ciphertext, ciphertext_len);
 			cout<<"messaggio decifrato:"<<endl;	//debug
-			BIO_dump_fp (stdout, (const char *)plaintext, plaintext_len);
+			BIO_dump_fp (stdout, (const char *)plaintext, plaintext_len);*/
 
 			/* Clean up */
 			EVP_CIPHER_CTX_free(ctx);
@@ -318,32 +321,6 @@ int gcm_decrypt(unsigned char * ciphertext, int ciphertext_len,
 		}
 
 
-		unsigned char* get_session_key(int sock,string peer_username){
-			int ret;
-
-			// retrieve shared secret from file
-			string seskey_file_name ="Client/SessionKeys/"+myUsername+"_"+peer_username+"_seskey.txt";
-			FILE * seskey_file = fopen(seskey_file_name.c_str(), "r");
-			if (!seskey_file) {
-				cerr << "Error: cannot open file '" << seskey_file_name << "' (missing?)\n";
-				exit(1);
-			}
-
-			// get the shared secret size:
-			// (assuming no failures in fseek() and ftell())
-			//TODO we can't assume any failure
-			fseek(seskey_file, 0, SEEK_END);
-			long int sskey_size = ftell(seskey_file);
-			fseek(seskey_file, 0, SEEK_SET);
-
-			//read the shared secret
-			unsigned char* sskey_buf = (unsigned char*)malloc(sskey_size);
-			ret=fread(sskey_buf, 1, sskey_size, seskey_file);
-			if(ret < sskey_size) { cerr << "Error while reading file '" << seskey_file_name << "'\n"; exit(1); }
-			fclose(seskey_file);
-
-			return sskey_buf;
-		}
 
 		//send message to the server/opponent using symmetric encription
 		void send_message(int sock, string client_nonce, unsigned char * clear_buf, uint32_t clear_size,string peer_username) {
@@ -356,19 +333,18 @@ int gcm_decrypt(unsigned char * ciphertext, int ciphertext_len,
 			unsigned char * cphr_buf = (unsigned char * ) malloc(clear_size+64);
 			unsigned char * tag_buf = (unsigned char * ) malloc(16);
 			unsigned char* session_key=(unsigned char * ) malloc(32); //aes key size...
-			session_key=get_session_key(sock,peer_username);  //debug
+			session_key=(peer_username=="server")?server_ses_key:opponent_ses_key;  //debug
 
 			gcm_encrypt(clear_buf, clear_size, iv, 12, session_key, iv, 12, cphr_buf, tag_buf);
 
-			cout<<"invio messaggio, lungh: "<<clear_size<<endl;
+			cout<<"invio messaggio, lungh: "<<clear_size<<endl;	//debug
 			cout<<send(sock, tag_buf, 16, 0)<<endl; //tag with fixed size
 			cout<<send(sock, (const char * ) & clear_size, sizeof(uint32_t), 0)<<endl; //size of ciphertext
 			cout<<send(sock, cphr_buf, clear_size, 0)<<endl;; //ciphertext
 
 		}
 
-
-
+		
 		// SERVER SESSION KEY GENERATION
 
 		static DH *get_dh2048_auto(void){
@@ -425,61 +401,13 @@ int gcm_decrypt(unsigned char * ciphertext, int ciphertext_len,
 				exit(1);
 			}
 
-			void generateSessionKey(int &socket,string peer_username){
+			void generateSessionKey(int &socket,string peer_username,unsigned char* peer_pubkey_buf,uint32_t peer_pubkey_size){
 
-				//DH
-				EVP_PKEY* dhparams;
-				if(NULL == (dhparams = EVP_PKEY_new())) handleErrorsDH();
-				DH* temp = get_dh2048_auto();
-				if(1 != EVP_PKEY_set1_DH(dhparams,temp)) handleErrorsDH();
-				DH_free(temp);
-
-
-				EVP_PKEY_CTX* DHctx = EVP_PKEY_CTX_new(dhparams,NULL); //handle errors
-				EVP_PKEY* dh_prv_key = NULL;
-				EVP_PKEY_keygen_init(DHctx);
-				EVP_PKEY_keygen(DHctx,&dh_prv_key);
-
-				int dh_prv_key_size =  EVP_PKEY_size(dh_prv_key);
-				cout<<dh_prv_key_size<<"<>"<<dh_prv_key<<"\n"; //debug
-
-				cout << "Sending DH public key to peer \n"; //debug
-
-				BIO* mbio=BIO_new(BIO_s_mem()); //serializing the key
-				PEM_write_bio_PUBKEY(mbio,dh_prv_key);
-				char* pubkey_buf = NULL;
-				long pubkey_size = BIO_get_mem_data(mbio,&pubkey_buf);
-
-				send(socket, &pubkey_size, sizeof(long) , 0 ); //dimensione messaggio
-				send(socket, pubkey_buf,pubkey_size, 0);
-				BIO_free(mbio);
-
-				long peer_pubkey_size;
-				//size of  message is received
-				int valread;
-				if ((valread = recv( socket , &peer_pubkey_size, sizeof(long),0)) == 0)
-				{
-					cout<<"peer disconnected"<<endl;
-					exit(1);
-				}
-
-				unsigned char* peer_pubkey_buf =(unsigned char*)malloc(peer_pubkey_size);
-
-				cout<<peer_pubkey_size<<"\n";
-
-				//message received
-				if (valread = recv( socket , peer_pubkey_buf, peer_pubkey_size,MSG_WAITALL) == 0)
-				{
-					exit(1);
-				}
 
 				BIO* peer_mbio = BIO_new(BIO_s_mem());
 				BIO_write(peer_mbio, peer_pubkey_buf, peer_pubkey_size);
 				EVP_PKEY* peer_pubkey=PEM_read_bio_PUBKEY(peer_mbio,NULL,NULL,NULL);
 				BIO_free(peer_mbio);
-
-
-
 
 				cout<<peer_pubkey_size<<"<>"<<peer_pubkey<<"\n"; //debug
 
@@ -527,7 +455,7 @@ int gcm_decrypt(unsigned char * ciphertext, int ciphertext_len,
 				EVP_DigestUpdate(Hctx, (unsigned char*)skey, skeylen);
 				EVP_DigestFinal(Hctx, hashed_secret, &hashed_secret_len);
 
-				// export shared secret in a file
+			/*	// export shared secret in a file
 				string seskey_file_name ="Client/SessionKeys/"+myUsername+"_"+peer_username+"_seskey.txt";  //debug
 
 				FILE * seskey_file = fopen(seskey_file_name.c_str(), "wt");
@@ -540,16 +468,19 @@ int gcm_decrypt(unsigned char * ciphertext, int ciphertext_len,
 				if (ret<hashed_secret_len) {
 					cerr << "Error: PEM_write_PUBKEY returned NULL\n";
 					return;
-				}
+				}*/
 
 				//REMEMBER TO FREE CONTEXT!!!!!!
 				EVP_MD_CTX_free(Hctx);
 				EVP_PKEY_CTX_free(der_ctx);
 				EVP_PKEY_free(peer_pubkey);
 				EVP_PKEY_free(dh_prv_key);
-				EVP_PKEY_CTX_free(DHctx);
-				EVP_PKEY_free(dhparams);
-
+				
+				if(peer_username=="server")
+					server_ses_key=hashed_secret;
+				else
+					opponent_ses_key=hashed_secret;
+				
 			}
 
 			void sendDigitalSignature(int socket,unsigned char* clear_buf,unsigned int clear_size){
@@ -595,7 +526,46 @@ int gcm_decrypt(unsigned char * ciphertext, int ciphertext_len,
 				free(sgnt_buf);
 
 			}
+			uint32_t sendDhPubKey(int &socket,unsigned char* pubkey_buf,uint32_t nonce){
 
+			  EVP_PKEY* dhparams;
+			  if(NULL == (dhparams = EVP_PKEY_new())) handleErrorsDH();
+			  DH* temp = get_dh2048_auto();
+			  if(1 != EVP_PKEY_set1_DH(dhparams,temp)) handleErrorsDH();
+			  DH_free(temp);
+			  dh_prv_key=NULL;
+			  EVP_PKEY_CTX* DHctx = EVP_PKEY_CTX_new(dhparams,NULL); //handle errors
+			  EVP_PKEY_keygen_init(DHctx);
+			  EVP_PKEY_keygen(DHctx,&dh_prv_key);
+
+			  int dh_prv_key_size =  EVP_PKEY_size(dh_prv_key);
+			  cout<<dh_prv_key_size<<"<>"<<dh_prv_key<<"\n";
+
+			  cout << "Sending DH public key to server \n";
+
+			  BIO* mbio=BIO_new(BIO_s_mem());	//serializing the key..
+			  PEM_write_bio_PUBKEY(mbio,dh_prv_key);
+			  pubkey_buf = NULL;
+			  uint32_t pubkey_size = BIO_get_mem_data(mbio,&pubkey_buf);
+			  cout<<pubkey_size<<endl; //debug
+			  send(socket, &pubkey_size, sizeof(uint32_t) , 0 ); //dimensione messaggio
+			  send(socket, pubkey_buf,pubkey_size,0);
+			   
+			  
+
+			  //plaintext to be signed
+			  unsigned char* clear_buf=(unsigned char*)malloc(pubkey_size+10); 
+			  memcpy(clear_buf,pubkey_buf,pubkey_size);
+			  memcpy(&clear_buf[pubkey_size],toString(nonce,10).c_str(),10);   
+			  int clear_size=pubkey_size+10;
+			  sendDigitalSignature(socket, clear_buf, clear_size);
+			
+			  BIO_free(mbio);
+			  EVP_PKEY_CTX_free(DHctx);
+			  EVP_PKEY_free(dhparams);
+
+			  return pubkey_size;
+		  }
 			uint32_t * handleServerAuthentication(int sock,int id){
 
 				int valread;
@@ -610,16 +580,21 @@ int gcm_decrypt(unsigned char * ciphertext, int ciphertext_len,
 				if ((valread = read(sock, & server_nonce, sizeof(uint32_t))) == 0) {
 					cout << "server disconnected" << endl;
 					exit(1);
-				} else
+				}
 
 				cout<<"server nonce:"<<server_nonce<<endl;//debug
 				cout<<"client nonce:"<<*client_nonce<<endl;//debug
+				
 				/*certificate from server must be validated through CA*/
 				//size of next message is received
 				unsigned int size;
 				if ((valread = read(sock, & size, sizeof(uint32_t))) == 0) {
 					cout << "client disconnected" << endl;
 					exit(1);
+				}
+				if(size>5000 || size<0){
+				     	cerr<<"Invalid message size"<<endl;
+			     		exit(1);
 				}
 				//certificate from server is received
 				unsigned char * server_cert = (unsigned char * ) malloc(size);
@@ -629,6 +604,23 @@ int gcm_decrypt(unsigned char * ciphertext, int ciphertext_len,
 				}
 
 				validate_server_certificate(server_cert);
+				
+				//size of next message is received
+				uint32_t peer_pubkey_size;
+				if ((valread = read(sock, & peer_pubkey_size, sizeof(uint32_t))) == 0) {
+					cout << "client disconnected" << endl;
+					exit(1);
+				}
+				if(peer_pubkey_size>5000 || peer_pubkey_size<0){
+					cerr<<"Invalid message size"<<endl;
+			     		exit(1);
+				}
+				//DH public key from server is received
+				unsigned char * peer_pubkey_buf = (unsigned char * ) malloc(peer_pubkey_size);
+				if ((valread = read(sock, peer_pubkey_buf, peer_pubkey_size)) == 0) {
+					cout << "server disconnected" << endl;
+					exit(1);
+				}
 
 				/*digital signature from the server must be verified. */
 
@@ -638,44 +630,33 @@ int gcm_decrypt(unsigned char * ciphertext, int ciphertext_len,
 					cout << "server disconnected" << endl;
 					exit(1);
 				}
+				
 				//create the plaintext for signature verification
-				string s = "Hello"+toString(server_nonce,10);
-				unsigned char * clear_buf = (unsigned char * ) s.c_str();
-				unsigned int clear_size = strlen((const char * ) clear_buf);
+				unsigned char* clear_buf=(unsigned char*)malloc(peer_pubkey_size+10); 
+			 	memcpy(clear_buf,peer_pubkey_buf,peer_pubkey_size);
+				memcpy(&clear_buf[peer_pubkey_size],toString(*client_nonce,10).c_str(),10);   
+			        uint32_t clear_size=peer_pubkey_size+10;
 				verify_digital_signature(server_sign,256, clear_buf, clear_size,"server");
-				cout << "Server authentication completed!" << endl;
-
+		
+				//username +username_size+ DH public key +digital signature must be sent to the server for authentication
+		
 				//digit the username to be sent to the server
 				cout << "Please, type your username: ";
 				cin>>myUsername;
-
 				if(!cin) { cerr << "Error during input\n"; exit(1); }
-
-				// create the plaintext to be signed
-				s=myUsername+toString( * client_nonce,10);
-				cout<<"plaintext da segnare:"<<s<<endl;
-				clear_buf=(unsigned char*)s.c_str();
-				clear_size=strlen((const char*)clear_buf);
-
-				//Digital signature must be sent to the server for authentication
-				sendDigitalSignature(sock, clear_buf,clear_size);
-				unsigned int user_size=myUsername.size();
+				uint32_t user_size=myUsername.size();
 				send(sock , (const char*)&user_size, sizeof(uint32_t) , 0 );	//username size
 				send(sock , myUsername.c_str() , strlen(myUsername.c_str()) , 0 );	//username in clear
 
+				unsigned char* pubkey_buf;
 
-				/*digital signature of handshake termination message from the server must be verified. */
-				server_sign = (unsigned char * ) malloc(256);
-				if ((valread = read(sock, server_sign, 256)) == 0) {
-					cout << "server disconnected" << endl;
-					exit(1);
-				}
-				//create the plaintext for signature verification
-				s = "EndAuthentication" + toString(server_nonce,10);
-				clear_buf = (unsigned char * ) s.c_str();
-				clear_size = strlen((const char * ) clear_buf);
-				verify_digital_signature(server_sign,256, clear_buf, clear_size,"server");
+				uint32_t pubkey_size=sendDhPubKey(sock,pubkey_buf,server_nonce);
 
+				cout << "Authentication completed!" << endl;
+				/*SESSION KEY MUST BE ENSTABLISHED WITH SERVER*/
+				generateSessionKey(sock,"server",peer_pubkey_buf,peer_pubkey_size);
+				cout<<"Session key has been enstablished!"<<endl;
+			       
 				return client_nonce;
 			}
 
@@ -757,7 +738,10 @@ int gcm_decrypt(unsigned char * ciphertext, int ciphertext_len,
 				cout << "client disconnected" << endl;
 				exit(1);
 			}
-
+			if(cphr_len>5000 || cphr_len<0){
+				cerr<<"Invalid message size"<<endl;
+			     	exit(1);
+			}
 			//message from client is received
 			unsigned char * cphr_buf = (unsigned char * ) malloc(cphr_len);
 			if ((valread = read(opponent_sock, cphr_buf, cphr_len)) == 0) {
@@ -898,7 +882,7 @@ int gcm_decrypt(unsigned char * ciphertext, int ciphertext_len,
 
 		unsigned char* iv=(unsigned char*)malloc(12);
 		strncpy((char*)iv,nonce.c_str(),12);
-		unsigned char* session_key=get_session_key(sock,peer_username);
+		unsigned char* session_key=(peer_username=="server")?server_ses_key:opponent_ses_key;  
 		unsigned char * clear_buf = (unsigned char * ) malloc(cphr_len);
 
 		valread = gcm_decrypt(cphr_buf, cphr_len, iv, 12, tag_buf, session_key, iv, 12, clear_buf);
@@ -949,44 +933,64 @@ int gcm_decrypt(unsigned char * ciphertext, int ciphertext_len,
 				cout<<"mi sto connettendo"<<endl;
 				connect(opponent_sock,CLIENT_PORT,inet_ntoa(addr.sin_addr));
 
-				//Digital signature must be sent to the client for authentication
-				// create the plaintext to be signed  //debug
-				string s=myUsername+toString(*session_nonce,10);
-				unsigned char* clear_buf=(unsigned char*)s.c_str();
-				unsigned int clear_size=strlen((const char*)clear_buf);
-				sendDigitalSignature(opponent_sock,clear_buf,clear_size);
-
+				//DH public key +digital signature must be sent to the opponent for authentication
+				unsigned char* pubkey_buf;
+				uint32_t pubkey_size=sendDhPubKey(opponent_sock,pubkey_buf,*session_nonce);
+ 
+ 				
 				/*digital signature from the opponent must be verified. */
-				//size of next message is received
-				unsigned int sgnt_size;
-				if ((valread = read( opponent_sock , &sgnt_size, sizeof(uint32_t))) == 0)
-				{
-					cout<<"opponent disconnected"<<endl;
-					exit(1);
-				}
+				 uint32_t peer_pubkey_size;
 
-				//digital signature from the opponent is received
-				unsigned char * sgnt_buf = (unsigned char * ) malloc(sgnt_size);
-				if ((valread = read(opponent_sock, sgnt_buf, sgnt_size)) == 0) {
-					cout << "opponent disconnected" << endl;
-					exit(1);
-				}
+  				//size of  message is received
+  				if ((valread = recv( opponent_sock , &peer_pubkey_size, sizeof(uint32_t),0)) == 0)
+				  {
+				  	cout<<"client disconnected"<<endl;
+					  	close(opponent_sock);
+				  }
+				  if(peer_pubkey_size>5000 || peer_pubkey_size<0){
+				     	close(opponent_sock);
+				  }
+				  unsigned char* peer_pubkey_buf =(unsigned char*)malloc(peer_pubkey_size);
 
-				//create the plaintext for signature verification
-				s = opponent_username+toString(*session_nonce,10);
-				clear_buf = (unsigned char * ) s.c_str();
-				clear_size = strlen((const char * ) clear_buf);
+				  //message received
+				  if (valread = recv( opponent_sock , peer_pubkey_buf, peer_pubkey_size,MSG_WAITALL) == 0)
+				  {
+				    cout<<"client disconnected"<<endl;
+					  	close(opponent_sock);
+				  }
+				    //size of next message is received
+				    unsigned int sgnt_size;
+				    if ((valread = read( opponent_sock , &sgnt_size, sizeof(uint32_t))) == 0)
+				    {
+				      cout<<"client disconnected"<<endl;
+					  close(opponent_sock);
+				    }
+				    if(sgnt_size>5000 || sgnt_size<0){
+				     	close(opponent_sock);
+				     }
+				     
+				    //digital signature of the client is received.
+				    unsigned char* sgnt_buf= (unsigned char*)malloc(sgnt_size);
+				    if ((valread = read( opponent_sock , sgnt_buf, sgnt_size)) == 0)
+				    {
+				      cout<<"client disconnected"<<endl;
+					  	close(opponent_sock);
+				    }
+
+				    //create the plaintext for signature verification
+				    unsigned char*clear_buf=(unsigned char*)malloc(peer_pubkey_size+10); 
+				    memcpy(clear_buf,peer_pubkey_buf,peer_pubkey_size);
+				    memcpy(&clear_buf[peer_pubkey_size],toString(*session_nonce,10).c_str(),10);   
+				    uint32_t clear_size=peer_pubkey_size+10;
 
 				verify_digital_signature(sgnt_buf,sgnt_size, clear_buf, clear_size,opponent_username);
 
-				//Message of handshake termination must be sent to the client
-				s="EndAuthentication"+toString(*session_nonce,10);
-				clear_buf=(unsigned char*)s.c_str();
-				clear_size=strlen((const char*)clear_buf);
-				sendDigitalSignature(opponent_sock,clear_buf,clear_size);
+				cout<<" peer pubkey:"<<endl;	//debug
+		BIO_dump_fp (stdout, (const char *)peer_pubkey_buf, peer_pubkey_size);
+		
 
 				cout << "Authentication completed!" << endl<<endl;
-				generateSessionKey(opponent_sock,opponent_username);
+				generateSessionKey(opponent_sock,opponent_username,peer_pubkey_buf,peer_pubkey_size);
 				cout<<"Session key generated!"<<endl<<endl;
 
 
@@ -1001,56 +1005,63 @@ int gcm_decrypt(unsigned char * ciphertext, int ciphertext_len,
 
 			listenForClientConnection(addr);
 
-			/*digital signature from the opponent must be verified. */
-			//size of next message is received
-			unsigned int sgnt_size;
-			if ((valread = read( opponent_sock , &sgnt_size, sizeof(uint32_t))) == 0)
-			{
-				cout<<"opponent disconnected"<<endl;
-				exit(1);
-			}
+			//DH public key +digital signature must be sent to the opponent for authentication
+				unsigned char* pubkey_buf;
+				uint32_t pubkey_size=sendDhPubKey(opponent_sock,pubkey_buf,*session_nonce);
+ 
+				/*digital signature from the opponent must be verified. */
+				 uint32_t peer_pubkey_size;
 
-			//digital signature from the opponent is received
-			unsigned char * sgnt_buf = (unsigned char * ) malloc(sgnt_size);
-			if ((valread = read(opponent_sock, sgnt_buf, sgnt_size)) == 0) {
-				cout << "opponent disconnected" << endl;
-				exit(1);
-			}
+  				//size of  message is received
+  				if ((valread = recv( opponent_sock , &peer_pubkey_size, sizeof(uint32_t),0)) == 0)
+				  {
+				  	cout<<"client disconnected"<<endl;
+					  	close(opponent_sock);
+				  }
+				  if(peer_pubkey_size>5000 || peer_pubkey_size<0){
+				     	close(opponent_sock);
+				  }
+				  unsigned char* peer_pubkey_buf =(unsigned char*)malloc(peer_pubkey_size);
 
-			//create the plaintext for signature verification
-			string s = opponent_username+toString(*session_nonce,10);
-			unsigned char * clear_buf = (unsigned char * ) s.c_str();
-			unsigned int clear_size = strlen((const char * ) clear_buf);
-			verify_digital_signature(sgnt_buf,sgnt_size, clear_buf, clear_size,opponent_username);
+				  //message received
+				  if (valread = recv( opponent_sock , peer_pubkey_buf, peer_pubkey_size,MSG_WAITALL) == 0)
+				  {
+				    cout<<"client disconnected"<<endl;
+					  	close(opponent_sock);
+				  }
+				    //size of next message is received
+				    unsigned int sgnt_size;
+				    if ((valread = read( opponent_sock , &sgnt_size, sizeof(uint32_t))) == 0)
+				    {
+				      cout<<"client disconnected"<<endl;
+					  close(opponent_sock);
+				    }
+				    if(sgnt_size>5000 || sgnt_size<0){
+				     	close(opponent_sock);
+				     }
+				     
+				    //digital signature of the client is received.
+				    unsigned char* sgnt_buf= (unsigned char*)malloc(sgnt_size);
+				    if ((valread = read( opponent_sock , sgnt_buf, sgnt_size)) == 0)
+				    {
+				      cout<<"client disconnected"<<endl;
+					  	close(opponent_sock);
+				    }
 
-			//Digital signature must be sent to the client for authentication
-			s=myUsername+toString(*session_nonce,10);
-			clear_buf=(unsigned char*)s.c_str();
-			clear_size=strlen((const char*)clear_buf);
-			sendDigitalSignature(opponent_sock,clear_buf,clear_size);
+				    //create the plaintext for signature verification
+				    unsigned char*clear_buf=(unsigned char*)malloc(peer_pubkey_size+10); 
+				    memcpy(clear_buf,peer_pubkey_buf,peer_pubkey_size);
+				    memcpy(&clear_buf[peer_pubkey_size],toString(*session_nonce,10).c_str(),10);   
+				    uint32_t clear_size=peer_pubkey_size+10;
 
-			/*digital signature of handshake termination message from the opponent must be verified. */
-			//size of next message is received
-			if ((valread = read( opponent_sock , &sgnt_size, sizeof(uint32_t))) == 0)
-			{
-				cout<<"opponent disconnected"<<endl;
-				exit(1);
-			}
+				verify_digital_signature(sgnt_buf,sgnt_size, clear_buf, clear_size,opponent_username);
 
-			//digital signature from the opponent is received
-			sgnt_buf = (unsigned char * ) malloc(sgnt_size);
-			if ((valread = read(opponent_sock, sgnt_buf, sgnt_size)) == 0) {
-				cout << "opponent disconnected" << endl;
-				exit(1);
-			}
-			//create the plaintext for signature verification
-			s = "EndAuthentication"+toString(*session_nonce,10);
-			clear_buf = (unsigned char * ) s.c_str();
-			clear_size = strlen((const char * ) clear_buf);
-			verify_digital_signature(sgnt_buf,sgnt_size, clear_buf, clear_size,opponent_username);
 
+		cout<<" peer pubkey:"<<endl;	//debug
+		BIO_dump_fp (stdout, (const char *)peer_pubkey_buf, peer_pubkey_size);
+		
 			cout << "Authentication completed!" << endl<<endl;
-			generateSessionKey(opponent_sock,opponent_username);
+			generateSessionKey(opponent_sock,opponent_username,peer_pubkey_buf,peer_pubkey_size);
 			cout<<"Session key generated!"<<endl;
 
 			/*Game interface is now visible on console*/
@@ -1109,6 +1120,10 @@ void packetReceiver(int sock){
 			cout << "client disconnected" << endl;
 			exit(1);
 		}
+		if(cphr_len>5000 || cphr_len<0){
+		     	cerr<<"Invalid message size"<<endl;
+			exit(1);
+		 }
 		/*       cout<<"dimensione di chpr_len: "<<valread<<endl;//debug
 		cout<<"chpr_len: "<<cphr_len<<endl<<endl;
 		*/
@@ -1150,11 +1165,6 @@ int main(int argc, char const *argv[])
 
 	//*AUTHENTICATION WITH SERVER*//
 	client_nonce=handleServerAuthentication(sock,id);
-	cout << "Authentication completed!" << endl;
-
-	/*SESSION KEY MUST BE ENSTABLISHED WITH SERVER*/
-	generateSessionKey(sock,"server");
-	cout<<"Session key has been enstablished!"<<endl;
 
 
 	//INTERRUPT DRIVEN CONNECTION

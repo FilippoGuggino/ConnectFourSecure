@@ -33,6 +33,8 @@ mutex connectedUsersMutex;
 vector<struct UserInfo> pendingUsers;
 mutex pendingUsersMutex;
 
+EVP_PKEY* dh_prv_key = NULL;
+
 //utility function that allows to get a fix-sized string from nonce (10 bytes for nonce exchange and 12 for iv generation)
 string toString(uint32_t s,int i){
 
@@ -139,7 +141,7 @@ int gcm_decrypt(unsigned char *ciphertext, int ciphertext_len,
 
     /* Clean up */
     EVP_CIPHER_CTX_cleanup(ctx);
-
+/*
     cout<<"iv:"<<endl;	//debug
 		 BIO_dump_fp (stdout, (const char *)iv, 12);
 
@@ -149,7 +151,7 @@ int gcm_decrypt(unsigned char *ciphertext, int ciphertext_len,
   cout<<"messaggio cifrato:"<<endl;	//debug
 		 BIO_dump_fp (stdout, (const char *)ciphertext, ciphertext_len);
    cout<<"messaggio decifrato:"<<endl;	//debug
-		 BIO_dump_fp (stdout, (const char *)plaintext, plaintext_len);
+		 BIO_dump_fp (stdout, (const char *)plaintext, plaintext_len);*/
 
 
     if(ret > 0) {
@@ -165,32 +167,16 @@ int gcm_decrypt(unsigned char *ciphertext, int ciphertext_len,
 }
 
 unsigned char* get_session_key(string username){
-	int ret;
-
-	// retrieve shared secret from file
-  	  //TODO retrieve username of peer
-	  string seskey_file_name = "Server/SessionKeys/"+username+"_seskey.txt";
-	  FILE * seskey_file = fopen(seskey_file_name.c_str(), "r");
-	  if (!seskey_file) {
-	    cerr << "Error: cannot open file '" << seskey_file_name << "' (missing?)\n";
-	    exit(1);
-	  }
-
-	  // get the ss size:
-	  // (assuming no failures in fseek() and ftell())
-	  //TODO we can't assume any failure
-	  fseek(seskey_file, 0, SEEK_END);
-	  long int sskey_size = ftell(seskey_file);
-	  fseek(seskey_file, 0, SEEK_SET);
-
-	  //read the ss
-	  unsigned char* sskey_buf = (unsigned char*)malloc(sskey_size);
-	  ret=fread(sskey_buf, 1, sskey_size, seskey_file);
-	  if(ret < sskey_size) { cerr << "Error while reading file '" << seskey_file_name << "'\n"; exit(1); }
-	  fclose(seskey_file);
-	  return sskey_buf;
+	
+	unsigned char *ses_key;
+	for(int i=0;i<connectedUsers.size();i++){	 
+		if(connectedUsers[i].username==username){
+	    	        ses_key= connectedUsers[i].ses_key;
+	    	}
+	}
+	return ses_key;
+	
 }
-
 //This function allows send updated user list and forward challenge requests/responses
 void send_message(int sock,string client_nonce,unsigned char* clear_buf,uint32_t clear_size,string username){
 
@@ -199,6 +185,9 @@ void send_message(int sock,string client_nonce,unsigned char* clear_buf,uint32_t
 	  unsigned char* cphr_buf=(unsigned char*)malloc(clear_size);
 	  unsigned char* tag_buf=(unsigned char*)malloc(16);
   	  unsigned char* session_key=get_session_key(username);
+  	  cout<<"session_key:"<<endl;	//debug
+		 BIO_dump_fp (stdout, (const char *)session_key, 128);
+
 
 	  gcm_encrypt(clear_buf,clear_size,iv,12,session_key,iv,12,cphr_buf, tag_buf);
 
@@ -236,11 +225,12 @@ unsigned char* forgeUpdatePacket(){
   clear_buf[0] = '5';
 
   int k = 1;
-  for(int i = 0; i < connectedUsers.size(); i++ , k+=user_size+1){
+  for(int i = 0; i < connectedUsers.size(); i++){
 		if(connectedUsers[i].playing==false){
     	strcpy((char*)&clear_buf[k], connectedUsers[i].username.c_str());
     	user_size = connectedUsers[i].username.size();
     	clear_buf[k+user_size] = ',';
+    	k+=user_size+1;
 		}
   }
 
@@ -335,7 +325,7 @@ bool removeFromConnectedUsers(string s){
 
 //synchronized function, only one thread at a time can enter this function
 //update connectedUsers
-bool addToConnectedUsers(int sd, string username,uint32_t nonce, struct sockaddr_in address){
+bool addToConnectedUsers(int sd, string username,uint32_t nonce, struct sockaddr_in address,unsigned char* ses_key ){
   lock_guard<mutex> guard(connectedUsersMutex);
   if(indexOf(connectedUsers, username) == -1){
     struct UserInfo tmp;
@@ -343,6 +333,7 @@ bool addToConnectedUsers(int sd, string username,uint32_t nonce, struct sockaddr
     tmp.username = username;
     tmp.nonce = nonce;
     tmp.address = address;
+    tmp.ses_key=ses_key;
     connectedUsers.push_back(tmp);
     return true;
   }
@@ -385,7 +376,6 @@ void send_digital_signature(int sock,unsigned char* clear_buf,unsigned int clear
   ret = EVP_SignFinal(md_ctx, sgnt_buf, &sgnt_size, prvkey);
   if(ret == 0){ cerr << "Error: EVP_SignFinal returned " << ret << "\n"; exit(1); }
 
-  cout<<sgnt_size<<endl;
   send(sock , sgnt_buf , sgnt_size , 0 );
 
 
@@ -398,7 +388,7 @@ void send_digital_signature(int sock,unsigned char* clear_buf,unsigned int clear
   free(sgnt_buf);
 }
 
-bool verify_client_signature(string username,unsigned char* sgnt_buf,unsigned int sgnt_size,string client_nonce){
+bool verify_client_signature(string username,unsigned char* clear_buf,unsigned int clear_size,unsigned char* sgnt_buf,unsigned int sgnt_size,string server_nonce){
 
   int ret;
 
@@ -413,11 +403,6 @@ bool verify_client_signature(string username,unsigned char* sgnt_buf,unsigned in
 
   // declare some useful variables:
   const EVP_MD* md = EVP_sha256();
-
-  //create the plaintext
-  string s=username+client_nonce;
-  unsigned char* clear_buf=(unsigned char*)s.c_str();
-  unsigned int clear_size=strlen((const char*)clear_buf);
 
   // create the signature context:
   EVP_MD_CTX* md_ctx = EVP_MD_CTX_new();
@@ -512,7 +497,7 @@ bool verify_client_signature(string username,unsigned char* sgnt_buf,unsigned in
     BIO* mbio=BIO_new(BIO_s_mem()); //serializing the certificate
     PEM_write_bio_X509(mbio,cert);
     char* cert_buf = NULL;
-    long cert_size = BIO_get_mem_data(mbio,&cert_buf);
+    uint32_t cert_size = BIO_get_mem_data(mbio,&cert_buf);
 
 
     send(sock , (const char*)&cert_size , sizeof(uint32_t) , 0 );  //certificate size
@@ -532,7 +517,7 @@ void generateUserInfoMessage(uint32_t* nonce,string dest_username,int dest_socke
 		BIO* mbio=BIO_new(BIO_s_mem());  //serializing the public key...
 	  	PEM_write_bio_PUBKEY(mbio,pubkey);
 		char* pubkey_buf = NULL;
-	 	long pubkey_size = BIO_get_mem_data(mbio,&pubkey_buf);
+	 	uint32_t pubkey_size = BIO_get_mem_data(mbio,&pubkey_buf);
 
 		uint32_t dest_nonce;
 		for(int i=0;i<connectedUsers.size();i++){	 //increase  nonce
@@ -688,11 +673,17 @@ int handleClientMessage(int sd,unsigned char* cphr_buf,uint32_t cphr_len,unsigne
 		RAND_bytes((unsigned char*)&nonce[0],sizeof(uint32_t));
 
 		//Retrieve opponent' ip
-		uint32_t ip;
-		uint32_t dest_nonce;
+		uint32_t opponent_ip;
 		for(int i=0;i<connectedUsers.size();i++){
 			if(connectedUsers[i].username==opponent_username){
-		    		ip=connectedUsers[i].address.sin_addr.s_addr;
+		    		opponent_ip=connectedUsers[i].address.sin_addr.s_addr;
+		    	        break;
+		    	}
+		}
+		uint32_t sender_ip;
+		for(int i=0;i<connectedUsers.size();i++){
+			if(connectedUsers[i].username==sender_username){
+		    		sender_ip=connectedUsers[i].address.sin_addr.s_addr;
 		    	        break;
 		    	}
 		}
@@ -705,13 +696,12 @@ int handleClientMessage(int sd,unsigned char* cphr_buf,uint32_t cphr_len,unsigne
 		    	}
 		    }
 
-		generateUserInfoMessage(nonce,opponent_username,opponent_socket,sender_username,ip,'1'); //send opponent's info to sender of the challenge
-		generateUserInfoMessage(nonce,sender_username,sender_socket,opponent_username,ip,'0'); //send opponent's info to sender of the challenge
+		generateUserInfoMessage(nonce,opponent_username,opponent_socket,sender_username,sender_ip,'1'); //send opponent's info to receiver of the challenge
+		sleep(1);
+		generateUserInfoMessage(nonce,sender_username,sender_socket,opponent_username,opponent_ip,'0'); //send opponent's info to sender of the challenge
 		updatePlayerState(opponent_username);
 		updatePlayerState(sender_username);
 		updateClientsWithConnectedUsersList();
-		//removeFromConnectedUsers(opponent_username);
-		//removeFromConnectedUsers(sender_username);
 	 }
     }
     if (*type=='7'){
@@ -730,7 +720,7 @@ int handleClientMessage(int sd,unsigned char* cphr_buf,uint32_t cphr_len,unsigne
 
 	  }
 
-		if (*type=='8'){
+	if (*type=='8'){
 			string client_msg((const char*)&clear_buf[1],cphr_len-1);
 	    if (client_msg.compare("recon")==0){
 				handleUserReconnection(username);
@@ -746,7 +736,114 @@ int handleClientMessage(int sd,unsigned char* cphr_buf,uint32_t cphr_len,unsigne
   return true;
 }
 
-  bool handleAuthentication(int sd, string& username,unsigned int* client_nonce){
+uint32_t sendDhPubKey(int &socket,unsigned char* pubkey_buf,uint32_t nonce){
+
+	  EVP_PKEY* dhparams;
+	  if(NULL == (dhparams = EVP_PKEY_new())) handleErrorsDH();
+	  DH* temp = get_dh2048_auto();
+	  if(1 != EVP_PKEY_set1_DH(dhparams,temp)) handleErrorsDH();
+	  DH_free(temp);
+	  dh_prv_key=NULL;
+	  EVP_PKEY_CTX* DHctx = EVP_PKEY_CTX_new(dhparams,NULL); //handle errors
+	  EVP_PKEY_keygen_init(DHctx);
+	  EVP_PKEY_keygen(DHctx,&dh_prv_key);
+
+	  int dh_prv_key_size =  EVP_PKEY_size(dh_prv_key);
+	  cout<<dh_prv_key_size<<"<>"<<dh_prv_key<<"\n";
+
+	  cout << "Sending DH public key to client \n";
+
+	  BIO* mbio=BIO_new(BIO_s_mem());	//serializing the key..
+	  PEM_write_bio_PUBKEY(mbio,dh_prv_key);
+	  pubkey_buf = NULL;
+	  uint32_t pubkey_size = BIO_get_mem_data(mbio,&pubkey_buf);
+
+	  send(socket, &pubkey_size, sizeof(uint32_t) , 0 ); //dimensione messaggio
+	  send(socket, pubkey_buf,pubkey_size,0);
+	  
+	  //plaintext to be signed
+	  unsigned char* clear_buf=(unsigned char*)malloc(pubkey_size+10); 
+	  memcpy(clear_buf,pubkey_buf,pubkey_size);
+
+	  memcpy(&clear_buf[pubkey_size],toString(nonce,10).c_str(),10);   
+	  int clear_size=pubkey_size+10;
+	  send_digital_signature(socket, clear_buf, clear_size);
+	    	  
+	  BIO_free(mbio);
+	  EVP_PKEY_free(dhparams);
+  	  EVP_PKEY_CTX_free(DHctx);
+	  return pubkey_size;
+  }
+
+unsigned char* generateSessionKey(int &socket,unsigned char* peer_pubkey_buf,uint32_t peer_pubkey_size){
+
+
+  BIO* peer_mbio = BIO_new(BIO_s_mem());
+  BIO_write(peer_mbio, peer_pubkey_buf, peer_pubkey_size);
+  EVP_PKEY* peer_pubkey=PEM_read_bio_PUBKEY(peer_mbio,NULL,NULL,NULL);
+  BIO_free(peer_mbio);
+
+  printf("Starting DH process inside the server \n"); //debug
+
+
+  EVP_PKEY_CTX *der_ctx;
+  unsigned char *skey;
+  size_t skeylen;
+  der_ctx = EVP_PKEY_CTX_new(dh_prv_key,NULL);
+  if (!der_ctx) handleErrorsDH();
+  if (EVP_PKEY_derive_init(der_ctx) <= 0) handleErrorsDH();
+  
+  //Setting the peer with its pubkey
+  if (EVP_PKEY_derive_set_peer(der_ctx, peer_pubkey) <= 0) handleErrorsDH();
+  // Determine buffer length, by performing a derivation but writing the result nowhere
+  EVP_PKEY_derive(der_ctx, NULL, &skeylen);
+  //allocate buffer for the shared secret
+  skey = (unsigned char*)(malloc(int(skeylen)));
+  if (!skey) handleErrorsDH();
+  //Perform again the derivation and store it in skey buffer
+  if (EVP_PKEY_derive(der_ctx, skey, &skeylen) <= 0) handleErrorsDH();
+
+
+  unsigned char* hashed_secret;
+  unsigned int hashed_secret_len;
+  EVP_MD_CTX *Hctx;
+  Hctx = EVP_MD_CTX_new();
+  //allocate memory
+  hashed_secret = (unsigned char*) malloc(EVP_MD_size(EVP_sha256()));
+  //init, Update (only once) and finalize digest
+  EVP_DigestInit(Hctx, EVP_sha256());
+  EVP_DigestUpdate(Hctx, (unsigned char*)skey, skeylen);
+  EVP_DigestFinal(Hctx, hashed_secret, &hashed_secret_len);
+/*
+  // export shared secret in a file
+  string seskey_file_name = "Server/SessionKeys/"+username+"_seskey.txt";
+  FILE * seskey_file = fopen(seskey_file_name.c_str(), "wt");
+  if (!seskey_file) {
+    cerr << "Error: cannot open file '" << seskey_file_name << "' (missing?)\n";
+    return;
+  }
+  int ret=fwrite(hashed_secret,1,hashed_secret_len,seskey_file);
+  fclose(seskey_file);
+  if (ret<hashed_secret_len) {
+    cerr << "Error: fwrite returned NULL\n";
+    return;
+    
+  }
+*/
+  //REMEMBER TO FREE CONTEXT!!!!!!
+   cout<<"ses_key:"<<endl;	//debug
+		 BIO_dump_fp (stdout, (const char *)hashed_secret, 128);
+  
+  EVP_MD_CTX_free(Hctx);
+  EVP_PKEY_CTX_free(der_ctx);
+  EVP_PKEY_free(peer_pubkey);
+  EVP_PKEY_free(dh_prv_key);
+	
+  return hashed_secret;
+
+  }
+
+  bool handleAuthentication(int sd, string& username,unsigned int* client_nonce,struct sockaddr_in address){
     int valread = 0;
     ///*AUTHENTICATION WITH CLIENT*///
 
@@ -766,31 +863,15 @@ int handleClientMessage(int sd,unsigned char* cphr_buf,uint32_t cphr_len,unsigne
     send(sd , server_nonce , sizeof(uint32_t) , 0 );
 	cout<<"server nonce:"<<*server_nonce<<endl;//debug
 	cout<<"client nonce:"<<*client_nonce<<endl;//debug
-    //Certificate + digital signature must be sent to the client for authentication
+	
+    //Certificate +  certificate_size+ DH public key +digital signature must be sent to the client for authentication
     sendCertificate(sd);
-    string s = "Hello"+toString(*server_nonce,10);
-    unsigned char* clear_buf = (unsigned char*)s.c_str();
-    int clear_size=strlen((const char*)clear_buf);
-    send_digital_signature(sd, clear_buf, clear_size);
-    //authenticate_to_client(sd,toString(to_string(*server_nonce))); //to_string() to get variable size string from int.toString() to get fixed size string from variable string.
-
-    //digital signature from the client must be verified.
-
-    //size of next message is received
-    unsigned int client_sign_size;
-    if ((valread = read( sd , &client_sign_size, sizeof(uint32_t))) == 0)
-    {
-      cout<<"client disconnected"<<endl;
-	  close(sd);
-    }
-
-    //digital signature of the client is received.
-    unsigned char* client_sign= (unsigned char*)malloc(client_sign_size);
-    if ((valread = read( sd , client_sign, client_sign_size)) == 0)
-    {
-      cout<<"client disconnected"<<endl;
-	  	close(sd);
-    }
+    unsigned char* pubkey_buf;
+    uint32_t pubkey_size=sendDhPubKey(sd,pubkey_buf,*client_nonce);
+   	  cout<<"<>"<<dh_prv_key<<"\n";  //debug
+ 
+   
+    //DIGITAL SIGNATURE FROM THE CLIENT MUST BE VERIFIED
 
     //size of next message is received
     unsigned int size;
@@ -799,7 +880,9 @@ int handleClientMessage(int sd,unsigned char* cphr_buf,uint32_t cphr_len,unsigne
       cout<<"client disconnected"<<endl;
 	  	close(sd);
     }
-
+    if(size>5000 || size<0){
+     	close(sd);
+     }
 
     //username of the client is received
     unsigned char* usernameTmp = (unsigned char*)malloc(size);
@@ -811,151 +894,76 @@ int handleClientMessage(int sd,unsigned char* cphr_buf,uint32_t cphr_len,unsigne
 
     string str( reinterpret_cast<char const*>(usernameTmp), valread ) ;
     username = str;
-
-    if(verify_client_signature(str,client_sign,client_sign_size,toString(*client_nonce,10))==false)
-    	return false;
-    cout<<"Client authentication completed!"<<endl;
-
-    //Message of handshake termination must be sent to the client
-    s="EndAuthentication"+toString(*server_nonce,10);
-    cout<<"plaintext da segnare:"<<s<<endl;
-    clear_buf=(unsigned char*)s.c_str();
-    clear_size=strlen((const char*)clear_buf);
-
-    send_digital_signature(sd,clear_buf,clear_size);
-
-    cout<<"Authentication with "<<username<<" completed!"<<endl;
-    return true;
-  }
-
-  void generate_session_key(int &socket,string username){
-printf("DH: param phase \n"); //debug
- //DH
-
-  EVP_PKEY* dhparams;
-  if(NULL == (dhparams = EVP_PKEY_new())) handleErrorsDH();
-  DH* temp = get_dh2048_auto();
-  if(1 != EVP_PKEY_set1_DH(dhparams,temp)) handleErrorsDH();
-  DH_free(temp);
-
-  printf("DH: param 2 phase \n"); //debug
-
-  EVP_PKEY_CTX* DHctx = EVP_PKEY_CTX_new(dhparams,NULL); //handle errors
-  EVP_PKEY* dh_prv_key = NULL;
-  EVP_PKEY_keygen_init(DHctx);
-  EVP_PKEY_keygen(DHctx,&dh_prv_key);
-
-  int dh_prv_key_size =  EVP_PKEY_size(dh_prv_key);
-  cout<<dh_prv_key_size<<"<>"<<dh_prv_key<<"\n";
-
-  cout << "Sending DH public key to client \n";
-
-  BIO* mbio=BIO_new(BIO_s_mem());	//serializing the key..
-  PEM_write_bio_PUBKEY(mbio,dh_prv_key);
-  char* pubkey_buf = NULL;
-  long pubkey_size = BIO_get_mem_data(mbio,&pubkey_buf);
-  send(socket, &pubkey_size, sizeof(long) , 0 ); //dimensione messaggio
-  send(socket, pubkey_buf,pubkey_size,0);
-  BIO_free(mbio);
-
-  long peer_pubkey_size;
+    
+     uint32_t peer_pubkey_size;
 
   //size of  message is received
-  int valread;
-  if ((valread = recv( socket , &peer_pubkey_size, sizeof(long),0)) == 0)
+  if ((valread = recv( sd , &peer_pubkey_size, sizeof(uint32_t),0)) == 0)
   {
   	cout<<"client disconnected"<<endl;
-	  	close(socket);
+	  	close(sd);
   }
-
+  if(peer_pubkey_size>5000 || peer_pubkey_size<0){
+     	close(sd);
+  }
   unsigned char* peer_pubkey_buf =(unsigned char*)malloc(peer_pubkey_size);
 
-  cout<<peer_pubkey_size<<"\n";
-
   //message received
-  if (valread = recv( socket , peer_pubkey_buf, peer_pubkey_size,MSG_WAITALL) == 0)
+  if (valread = recv( sd , peer_pubkey_buf, peer_pubkey_size,MSG_WAITALL) == 0)
   {
     cout<<"client disconnected"<<endl;
-	  	close(socket);
+	  	close(sd);
   }
+    //size of next message is received
+    unsigned int client_sign_size;
+    if ((valread = read( sd , &client_sign_size, sizeof(uint32_t))) == 0)
+    {
+      cout<<"client disconnected"<<endl;
+	  close(sd);
+    }
+    if(client_sign_size>5000 || client_sign_size<0){
+     	close(sd);
+     }
+     
+    //digital signature of the client is received.
+    unsigned char* client_sign= (unsigned char*)malloc(client_sign_size);
+    if ((valread = read( sd , client_sign, client_sign_size)) == 0)
+    {
+      cout<<"client disconnected"<<endl;
+	  	close(sd);
+    }
 
-  BIO* peer_mbio = BIO_new(BIO_s_mem());
-  BIO_write(peer_mbio, peer_pubkey_buf, peer_pubkey_size);
-  EVP_PKEY* peer_pubkey=PEM_read_bio_PUBKEY(peer_mbio,NULL,NULL,NULL);
-  BIO_free(peer_mbio);
+    //create the plaintext for signature verification
+    unsigned char*clear_buf=(unsigned char*)malloc(peer_pubkey_size+10); 
+    memcpy(clear_buf,peer_pubkey_buf,peer_pubkey_size);
+    memcpy(&clear_buf[peer_pubkey_size],toString(*server_nonce,10).c_str(),10);   
+    uint32_t clear_size=peer_pubkey_size+10;
 
 
-  cout<<peer_pubkey_size<<"<>"<<peer_pubkey<<"\n";
+    if(verify_client_signature(str,clear_buf,clear_size,client_sign,client_sign_size,toString(*server_nonce,10))==false)
+    	return false;
+    cout<<"Client authentication completed!"<<endl;
+    
+    unsigned char*ses_key=generateSessionKey(sd,peer_pubkey_buf,peer_pubkey_size);
+ cout<<"ses_key:"<<endl;	//debug
+		 BIO_dump_fp (stdout, (const char *)ses_key, 128);
 
-  printf("Starting DH process inside the server \n"); //debug
-
-
-  EVP_PKEY_CTX *der_ctx;
-  unsigned char *skey;
-  size_t skeylen;
-  der_ctx = EVP_PKEY_CTX_new(dh_prv_key,NULL);
-  if (!der_ctx) handleErrorsDH();
-  if (EVP_PKEY_derive_init(der_ctx) <= 0) handleErrorsDH();
-  //Setting the peer with its pubkey
-  if (EVP_PKEY_derive_set_peer(der_ctx, peer_pubkey) <= 0) handleErrorsDH();
-  // Determine buffer length, by performing a derivation but writing the result nowhere
-  EVP_PKEY_derive(der_ctx, NULL, &skeylen);
-  //allocate buffer for the shared secret
-  skey = (unsigned char*)(malloc(int(skeylen)));
-  if (!skey) handleErrorsDH();
-  //Perform again the derivation and store it in skey buffer
-  if (EVP_PKEY_derive(der_ctx, skey, &skeylen) <= 0) handleErrorsDH();
-
-  unsigned char* hashed_secret;
-  unsigned int hashed_secret_len;
-  EVP_MD_CTX *Hctx;
-  Hctx = EVP_MD_CTX_new();
-  //allocate memory
-  hashed_secret = (unsigned char*) malloc(EVP_MD_size(EVP_sha256()));
-  //init, Update (only once) and finalize digest
-  EVP_DigestInit(Hctx, EVP_sha256());
-  EVP_DigestUpdate(Hctx, (unsigned char*)skey, skeylen);
-  EVP_DigestFinal(Hctx, hashed_secret, &hashed_secret_len);
-
-  // export shared secret in a file
-  string seskey_file_name = "Server/SessionKeys/"+username+"_seskey.txt";
-  FILE * seskey_file = fopen(seskey_file_name.c_str(), "wt");
-  if (!seskey_file) {
-    cerr << "Error: cannot open file '" << seskey_file_name << "' (missing?)\n";
-    return;
+    cout<<"Session key enstablished."<<endl;
+    cout<<"Authentication with "<<username<<" completed!"<<endl;	
+    if(addToConnectedUsers(sd, username,*client_nonce, address, ses_key) == 0){
+      return false;
+    }
+    return true;
   }
-  int ret=fwrite(hashed_secret,1,hashed_secret_len,seskey_file);
-  fclose(seskey_file);
-  if (ret<hashed_secret_len) {
-    cerr << "Error: fwrite returned NULL\n";
-    return;
-  }
-
-  //REMEMBER TO FREE CONTEXT!!!!!!
-  EVP_MD_CTX_free(Hctx);
-  EVP_PKEY_CTX_free(der_ctx);
-  EVP_PKEY_free(peer_pubkey);
-  EVP_PKEY_free(dh_prv_key);
-  EVP_PKEY_CTX_free(DHctx);
-  EVP_PKEY_free(dhparams);
-
-  }
-
+  
   void handleClient(int sd, struct sockaddr_in address){
     string username;
     int valread;
     uint32_t client_nonce;
 
-    if(handleAuthentication(sd,username,&client_nonce) == false){
+    if(handleAuthentication(sd,username,&client_nonce,address) == false){
       cout<<"Authentication Error, abort connection"<<endl;
           //TODO abort connection only with that client
-      return;
-    }
-    /*SESSION KEY MUST BE ENSTABLISHED WITH CLIENT*/
-    generate_session_key(sd,username);
-    cout<<"Session key has been enstablished!"<<endl;
-    cout<<username<<" is now online."<<endl;
-    if(addToConnectedUsers(sd, username,client_nonce, address) == 0){
       return;
     }
 
@@ -983,6 +991,9 @@ printf("DH: param phase \n"); //debug
   	cout<<"client disconnected"<<endl;
 	  	close(sd);
        }
+     if(cphr_len>5000 || cphr_len<0){
+     	close(sd);
+     }
 
   //message from client is received
     unsigned char* cphr_buf=(unsigned char*)malloc(cphr_len);
